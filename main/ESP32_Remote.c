@@ -8,9 +8,7 @@
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-
 #include "lvgl.h"
-
 #include "Display_SPD2010.h"
 #include "PCF85063.h"
 #include "QMI8658.h"
@@ -25,14 +23,13 @@
 #include "Remote_Fonts.h"
 #include "Remote_UI_Layout.h"
 #include "esp_log.h"
+#include "j_ui_utils.h"
+
 
 /* ============================================================
  *                  BUILD / HYGIENE HELPERS
  * ============================================================*/
 
-#ifndef J_UNUSED
-#define J_UNUSED(x) ((void)(x))
-#endif
 
 /* Compile-time assert (C11). If your toolchain is older, we’ll adjust. */
 #ifndef J_STATIC_ASSERT
@@ -189,18 +186,6 @@ typedef enum {
 static dev_temp_view_mode_t g_dev_temp_view_mode = DEV_TEMP_VIEW_CURRENT;
 static dev_pwr_view_mode_t  g_dev_pwr_view_mode  = DEV_PWR_VIEW_CURRENT;
 
-/* ============================================================
- *        LABEL STYLE CONFIG
- * ============================================================*/
-
-typedef struct {
-    const lv_font_t   *font;
-    uint32_t           color_hex;  // 0xRRGGBB
-    lv_align_t         align;
-    lv_text_align_t    text_align;
-    lv_coord_t         ofs_x;
-    lv_coord_t         ofs_y;
-} j_label_cfg_t;
 
 static const j_label_cfg_t J_LABEL_CFG_NAME = {
     .font       = J_FONT_DEVICE_NAME,
@@ -616,7 +601,6 @@ static void device_screen_switch_to_next(void);
 static void device_screen_switch_to_prev(void);
 
 static bool point_in_arc_hitbox(const lv_point_t *p, int16_t arc_start, int16_t arc_end);
-static void jinny_apply_label_cfg(lv_obj_t *label, const j_label_cfg_t *cfg);
 
 /* === Anim selector helpers === */
 static void anim_selector_build(void);
@@ -667,24 +651,6 @@ static inline void ui_active_dev_set_overlay(bool open)
 }
 
 
-static void make_invisible_hit_area(lv_obj_t *obj)
-{
-    lv_obj_clear_flag(obj, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_scrollbar_mode(obj, LV_SCROLLBAR_MODE_OFF);
-    lv_obj_set_style_bg_opa(obj, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(obj, 0, 0);
-    lv_obj_set_style_outline_width(obj, 0, 0);
-    lv_obj_set_style_shadow_width(obj, 0, 0);
-}
-
-static inline void j_lv_obj_del_safe(lv_obj_t **pp)
-{
-    if (!pp) return;
-    if (*pp) {
-        lv_obj_del(*pp);
-        *pp = NULL;
-    }
-}
 
 
 static void apply_hitbox_debug_to_panel(lv_obj_t *obj, bool enabled, lv_color_t color)
@@ -702,15 +668,6 @@ static void apply_hitbox_debug_to_panel(lv_obj_t *obj, bool enabled, lv_color_t 
 #endif
 }
 
-static void jinny_apply_label_cfg(lv_obj_t *label, const j_label_cfg_t *cfg)
-{
-    if (!label || !cfg) return;
-
-    lv_obj_set_style_text_font(label, cfg->font, 0);
-    lv_obj_set_style_text_color(label, lv_color_hex(cfg->color_hex), 0);
-    lv_obj_set_style_text_align(label, cfg->text_align, 0);
-    lv_obj_align(label, cfg->align, cfg->ofs_x, cfg->ofs_y);
-}
 
 static bool point_in_arc_hitbox(const lv_point_t *p, int16_t arc_start, int16_t arc_end)
 {
