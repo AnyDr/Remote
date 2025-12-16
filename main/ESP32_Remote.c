@@ -24,6 +24,8 @@
 #include "Remote_UI_Layout.h"
 #include "esp_log.h"
 #include "j_ui_utils.h"
+#include "ui_anim_overlay.h"
+
 
 
 /* ============================================================
@@ -60,6 +62,8 @@
 #define J_COLOR_ARC_WARN       lv_color_hex(0xFFD040)
 #define J_COLOR_ARC_DANGER     lv_color_hex(0xFF4040)
 #define J_COLOR_SPEED_ARC      lv_color_hex(0x4080FF)
+#define J_MODE_COLOR_ACTIVE_HEX  0x40D0FF
+
 
 #define J_BATT_ICON_W          34
 #define J_BATT_ICON_H          16
@@ -282,148 +286,6 @@ static lv_obj_t *right_hint;
 static lv_obj_t *brightness_overlay = NULL;
 static lv_obj_t *speed_overlay      = NULL;
 
-/* === ANIMATION overlay === */
-static lv_obj_t *animation_overlay  = NULL;
-
-/* === ANIMATION overlay: curved selector state === */
-#define J_ANIM_VISIBLE_ITEMS        7
-#define J_ANIM_HALF_ITEMS           (J_ANIM_VISIBLE_ITEMS/2)
-
-/* Config (edit here, no logic changes needed) */
-static const struct {
-    int32_t arc_radius;
-    int32_t arc_x_offset;
-    int32_t item_spacing;
-    int32_t center_x_ofs;   /* (+) right, (-) left  */
-    int32_t center_y_ofs;   /* (+) down,  (-) up    */
-    uint32_t snap_time_ms;
-    float    inertia_strength;
-    float    decel_per_s;
-    float    vel_stop;
-    int32_t  lock_px;
-    int32_t  horiz_step_px;
-    bool     cyclic;
-    uint32_t color_active_hex;   /* 0xRRGGBB */
-    uint32_t color_inactive_hex; /* 0xRRGGBB */
-} J_ANIM_CFG = {
-    .arc_radius        = 190,
-    .arc_x_offset      = -40,
-    .item_spacing      = 34,
-    .center_x_ofs      = 0, //положение колеса анимаций по горизонту, вправо +
-    .center_y_ofs      = 0, //положение колеса анимаций по вертикали, вверх -
-    .snap_time_ms      = 160,
-    .inertia_strength  = 1.25f,
-    .decel_per_s       = 5.0f,
-    .vel_stop          = 0.35f,
-    .lock_px           = 10,
-    .horiz_step_px     = 26,
-    .cyclic            = true,
-    .color_active_hex  = 0x40D0FF,
-    .color_inactive_hex= 0xE0E0E0,
-};
-
-/* ============================================================
- *        ANIM WHEEL SCALE (GEOMETRY + GAPS + FONTS)
- * ============================================================*/
-
-typedef enum {
-    J_WHEEL_FONT_S = 0,
-    J_WHEEL_FONT_M,
-    J_WHEEL_FONT_L,
-} j_wheel_font_profile_t;
-
-/* One knob to rule them all (0.85..1.25 typical). */
-static float g_anim_wheel_scale = 1.00f;
-
-/* Discrete font profile selected from scale (fonts are not truly scalable at runtime). */
-static j_wheel_font_profile_t g_anim_wheel_font_profile = J_WHEEL_FONT_M;
-
-/* Helpers: scale int pixels safely */
-static inline lv_coord_t j_scale_px_i(int v)
-{
-    int r = (int)lroundf((float)v * g_anim_wheel_scale);
-    if (r < 1) r = 1;
-    return (lv_coord_t)r;
-}
-
-static inline int32_t j_scale_i32(int32_t v)
-{
-    return (int32_t)lroundf((float)v * g_anim_wheel_scale);
-}
-
-/* Call this when you want to resize the wheel */
-static void anim_wheel_set_scale(float s)
-{
-    /* clamp to sane range */
-    if (s < 0.70f) s = 0.70f;
-    if (s > 1.60f) s = 1.60f;
-
-    g_anim_wheel_scale = s;
-
-    /* Pick font profile based on scale */
-    if (s < 0.90f) g_anim_wheel_font_profile = J_WHEEL_FONT_S;
-    else if (s > 1.15f) g_anim_wheel_font_profile = J_WHEEL_FONT_L;
-    else g_anim_wheel_font_profile = J_WHEEL_FONT_M;
-}
-
-
-
-static const char *g_animation_list[] = {
-    "Ambient",
-    "Aurora",
-    "Neon",
-    "Plasma",
-    "Embers",
-    "Ripple",
-    "Comet",
-    "Matrix",
-    "Pulse",
-    "Waves",
-    "Glitch"
-};
-#define J_ANIM_COUNT ((int)(sizeof(g_animation_list)/sizeof(g_animation_list[0])))
-
-static lv_obj_t *anim_selector_area = NULL;
-static lv_obj_t *anim_labels[J_ANIM_VISIBLE_ITEMS] = {0};
-
-static float     anim_pos = 0.0f;          /* continuous index */
-static float     anim_vel = 0.0f;          /* items/s */
-static int       anim_index = 0;           /* snapped selection */
-
-/* Effective pixel step between items for drag physics (computed from real text heights) */
-static lv_coord_t g_anim_scroll_step_px = 0;
-
-static bool      anim_dragging = false;
-static bool      anim_axis_locked = false;
-static bool      anim_lock_vertical = true;
-static bool      anim_dragged_far = false;
-static lv_point_t anim_p_down = {0};
-static lv_point_t anim_p_last = {0};
-static uint32_t   anim_t_last_ms = 0;
-
-static lv_timer_t *anim_inertia_timer = NULL;
-
-typedef struct {
-    float from;
-    float to;
-} anim_snap_ctx_t;
-
-static anim_snap_ctx_t anim_snap_ctx;
-
-static int anim_snap_target = 0;
-
-static void anim_selector_apply_selection(int new_index);
-static void anim_selector_update(void);
-
-
-static void anim_snap_ready_cb(lv_anim_t *a)
-{
-    J_UNUSED(a);
-    anim_selector_apply_selection(anim_snap_target);
-    anim_selector_update();
-}
-
-
 static lv_coord_t g_screen_w    = 0;
 static lv_coord_t g_screen_h    = 0;
 static lv_coord_t g_screen_size = 0;
@@ -575,9 +437,7 @@ static void brightness_overlay_close(void);
 static void speed_overlay_open(void);
 static void speed_overlay_close(void);
 
-static void animation_overlay_open(void);
-static void animation_overlay_close(void);
-static void animation_overlay_event_cb(lv_event_t *e);
+
 
 static void center_event_cb(lv_event_t *e);
 static void screen_touch_event_cb(lv_event_t *e);
@@ -602,14 +462,6 @@ static void device_screen_switch_to_prev(void);
 
 static bool point_in_arc_hitbox(const lv_point_t *p, int16_t arc_start, int16_t arc_end);
 
-/* === Anim selector helpers === */
-static void anim_selector_build(void);
-static void anim_selector_update(void);
-static void anim_selector_snap_to_nearest(bool animate);
-static void anim_selector_apply_selection(int new_index);
-static void anim_selector_event_cb(lv_event_t *e);
-static void anim_inertia_timer_cb(lv_timer_t *t);
-static void anim_snap_exec_cb(void *var, int32_t v);
 
 
 /* ============================================================
@@ -619,6 +471,26 @@ static void anim_snap_exec_cb(void *var, int32_t v);
 /* STEP 6: forward decls for helper in this section */
 static inline j_dev_ctx_t *ui_active_dev_ctx(void);
 static inline void ui_active_dev_set_overlay(bool open);
+/* ===== ui_anim_overlay bindings ===== */
+static void ui_anim_set_overlay(bool open)
+{
+    ui_active_dev_set_overlay(open);
+}
+
+static void ui_anim_set_mode(const char *mode_str)
+{
+    /* Your state model stores mode as const char* */
+    g_current_device.mode = mode_str;
+}
+
+static void ui_anim_request_refresh(void)
+{
+    /* Minimal + safe: refresh only if device screen is currently active */
+    if (screen_device && (lv_scr_act() == screen_device)) {
+        device_screen_update_from_state();
+    }
+}
+
 static bool ui_global_swipe_blocked(void)
 {
     /* Primary rule: device state */
@@ -746,7 +618,7 @@ static void center_event_cb(lv_event_t *e)
 
             g_center_last_click_ms = 0;
             LV_LOG_USER("Center double click: open animation overlay");
-            animation_overlay_open();
+            ui_anim_overlay_open();
         } else {
             g_center_last_click_ms = now;
             LV_LOG_USER("Center single click: open mode menu (not implemented yet)");
@@ -1221,8 +1093,9 @@ static void device_screen_update_from_state(void)
     lv_label_set_text(label_mode, st->mode);
 
     lv_color_t mode_color = st->is_on
-    ? lv_color_hex(J_ANIM_CFG.color_active_hex)
+    ? lv_color_hex(J_MODE_COLOR_ACTIVE_HEX)
     : lv_color_hex(0x808080);
+
 
     lv_obj_set_style_text_color(label_mode, mode_color, 0);
 
@@ -1510,590 +1383,6 @@ static void speed_overlay_close(void)
     j_lv_obj_del_safe(&speed_overlay);
 }
 
-
-/* ============================================================
- *        ANIM SELECTOR IMPLEMENTATION
- * ============================================================*/
-
-static int anim_wrap_index(int idx)
-{
-    if (J_ANIM_COUNT <= 0) return 0;
-    int r = idx % J_ANIM_COUNT;
-    if (r < 0) r += J_ANIM_COUNT;
-    return r;
-}
-
-static int anim_clamp_index(int idx)
-{
-    if (J_ANIM_COUNT <= 0) return 0;
-    if (idx < 0) return 0;
-    if (idx >= J_ANIM_COUNT) return (J_ANIM_COUNT - 1);
-    return idx;
-}
-
-/* Arc bending left: x = -(R - sqrt(R^2 - y^2)) + arc_x_offset */
-static int32_t anim_arc_x_from_y(int32_t y_rel)
-{
-    int32_t R = j_scale_i32(J_ANIM_CFG.arc_radius);
-    int32_t y = y_rel;
-    if (y > R) y = R;
-    if (y < -R) y = -R;
-
-    float yf = (float)y;
-    float Rf = (float)R;
-    float inside = (Rf * Rf) - (yf * yf);
-    if (inside < 0.0f) inside = 0.0f;
-
-    float dx = Rf - sqrtf(inside);
-    return (int32_t)(-dx) + j_scale_i32(J_ANIM_CFG.arc_x_offset);
-}
-
-static const lv_font_t *anim_font_for_level(int lvl)
-{
-    switch (g_anim_wheel_font_profile) {
-
-    case J_WHEEL_FONT_S:
-        /* Small wheel: 28 / 22 / 18 / 14 */
-        switch (lvl) {
-            case 0: return J_WHEEL_FONT_28;
-            case 1: return J_WHEEL_FONT_22;
-            case 2: return J_WHEEL_FONT_18;
-            default:return J_WHEEL_FONT_14;
-        }
-
-    case J_WHEEL_FONT_L:
-        /* Large wheel: 40 / 34 / 28 / 22 */
-        switch (lvl) {
-            case 0: return J_WHEEL_FONT_40;
-            case 1: return J_WHEEL_FONT_34;
-            case 2: return J_WHEEL_FONT_28;
-            default:return J_WHEEL_FONT_22;
-        }
-
-    case J_WHEEL_FONT_M:
-    default:
-        /* Medium wheel: 34 / 28 / 22 / 18 */
-        switch (lvl) {
-            case 0: return J_WHEEL_FONT_34;
-            case 1: return J_WHEEL_FONT_28;
-            case 2: return J_WHEEL_FONT_22;
-            default:return J_WHEEL_FONT_18;
-        }
-    }
-}
-
-
-
-
-
-static lv_coord_t anim_text_h_for(const char *txt, const lv_font_t *f)
-{
-    if (!txt || !f) return 16;
-
-    lv_point_t sz = {0};
-    /* реальные габариты отрисовки текста (а не line_height) */
-    lv_txt_get_size(&sz,
-                    txt,
-                    f,
-                    0,                /* letter_space */
-                    0,                /* line_space   */
-                    LV_COORD_MAX,     /* max_width    */
-                    LV_TEXT_FLAG_NONE);
-    if (sz.y <= 0) sz.y = (lv_coord_t)lv_font_get_line_height(f); /* fallback */
-    return sz.y;
-}
-
-
-
-static void anim_selector_apply_selection(int new_index)
-{
-    if (J_ANIM_COUNT <= 0) return;
-
-    int idx = J_ANIM_CFG.cyclic ? anim_wrap_index(new_index) : anim_clamp_index(new_index);
-    anim_index = idx;
-    anim_pos = (float)idx;
-
-    g_current_device.mode = g_animation_list[idx];
-
-/* Update only if device screen objects exist and it makes sense */
-if (screen_device && label_name && label_mode) {
-    /* Optional: only update if current active root is screen_device */
-    if (lv_scr_act() == screen_device) {
-        device_screen_update_from_state();
-    }
-}
-
-}
-
-static void anim_selector_update(void)
-{
-    if (!animation_overlay || !anim_selector_area) return;
-    if (J_ANIM_COUNT <= 0) return;
-    
-    #if J_DEBUG_ANIM_SELECTOR
-    static bool printed = false;
-    if (!printed) {
-        printed = true;
-
-        ESP_LOGI("ANIM", "fonts ptr: L0=%p L1=%p L2=%p L3=%p",
-                 (void*)J_FONT_OVERLAY,
-                 (void*)J_FONT_DEVICE_NAME,
-                 (void*)J_FONT_BODY,
-                 (void*)J_FONT_DIAG_TEXT);
-
-        ESP_LOGI("ANIM", "fonts lineH: L0=%d L1=%d L2=%d L3=%d",
-                 (int)lv_font_get_line_height(J_FONT_OVERLAY),
-                 (int)lv_font_get_line_height(J_FONT_DEVICE_NAME),
-                 (int)lv_font_get_line_height(J_FONT_BODY),
-                 (int)lv_font_get_line_height(J_FONT_DIAG_TEXT));
-    }
-#endif
-
-    
-
-
-        /* Local coordinate system: (0,0) is anim_selector_area top-left */
-    int32_t area_w = lv_obj_get_width(anim_selector_area);
-    int32_t area_h = lv_obj_get_height(anim_selector_area);
-
-    /* Wheel center INSIDE anim_selector_area */
-    int32_t cx = (area_w / 2) + J_ANIM_POS_X + J_ANIM_CFG.center_x_ofs;
-    int32_t cy = (area_h / 2) + J_ANIM_POS_Y + J_ANIM_CFG.center_y_ofs;
-
-
-    int base = (int)floorf(anim_pos);
-    float frac = anim_pos - (float)base;
-
-    lv_color_t c_active   = lv_color_hex(J_ANIM_CFG.color_active_hex);
-    lv_color_t c_inactive = lv_color_hex(J_ANIM_CFG.color_inactive_hex);
-
-    const lv_coord_t GAP_PX = j_scale_px_i(6);
-
-    /* --- Шаг дробного скролла = реальное расстояние между (base, lvl0) и (base+1, lvl1) --- */
-    int idx0 = J_ANIM_CFG.cyclic ? anim_wrap_index(base) : anim_clamp_index(base);
-    int idx1 = J_ANIM_CFG.cyclic ? anim_wrap_index(base + 1) : anim_clamp_index(base + 1);
-
-    const char *t0 = g_animation_list[idx0];
-    const char *t1 = g_animation_list[idx1];
-
-    lv_coord_t h0 = anim_text_h_for(t0, anim_font_for_level(0));
-    lv_coord_t h1 = anim_text_h_for(t1, anim_font_for_level(1));
-    lv_coord_t scroll_step_px = (h0 / 2) + GAP_PX + (h1 / 2);
-    if (scroll_step_px <= 1) scroll_step_px = j_scale_px_i(J_ANIM_CFG.item_spacing); /* fallback */
-
-    g_anim_scroll_step_px = scroll_step_px;
-
-
-    for (int i = -J_ANIM_HALF_ITEMS; i <= J_ANIM_HALF_ITEMS; i++) {
-        int slot = i + J_ANIM_HALF_ITEMS;
-
-        int idx_raw = base + i;
-        int idx = J_ANIM_CFG.cyclic ? anim_wrap_index(idx_raw) : anim_clamp_index(idx_raw);
-
-        lv_obj_t *lab = anim_labels[slot];
-        if (!lab) continue;
-
-        int lvl = (i < 0) ? -i : i;
-        if (lvl > 3) lvl = 3;
-
-        const char *txt = g_animation_list[idx];
-        const lv_font_t *font = anim_font_for_level(lvl);
-
-        lv_label_set_text(lab, txt);
-        lv_obj_set_style_text_font(lab, font, 0);
-        lv_obj_set_style_text_color(lab, (i == 0) ? c_active : c_inactive, 0);
-
-        if (lvl == 3)      lv_obj_set_style_text_opa(lab, LV_OPA_60, 0);
-        else if (lvl == 2) lv_obj_set_style_text_opa(lab, LV_OPA_80, 0);
-        else               lv_obj_set_style_text_opa(lab, LV_OPA_COVER, 0);
-
-        /* --- Y: считаем реальными высотами текста по пути от центра --- */
-        lv_coord_t y = (lv_coord_t)cy;
-
-        if (i != 0) {
-            int step_dir = (i > 0) ? 1 : -1;
-            int steps    = (i > 0) ? i : -i;
-
-            /* стартуем от центра (base, lvl0) */
-            lv_coord_t h_prev = h0;
-
-            for (int s = 1; s <= steps; s++) {
-                int lvl_cur = s;
-                if (lvl_cur > 3) lvl_cur = 3;
-
-                int idx_cur_raw = base + (step_dir * s);
-                int idx_cur = J_ANIM_CFG.cyclic ? anim_wrap_index(idx_cur_raw) : anim_clamp_index(idx_cur_raw);
-
-                const char *tcur = g_animation_list[idx_cur];
-                const lv_font_t *fcur = anim_font_for_level(lvl_cur);
-                lv_coord_t h_cur = anim_text_h_for(tcur, fcur);
-
-                y += step_dir * ((h_prev / 2) + GAP_PX + (h_cur / 2));
-                
-                h_prev   = h_cur;
-            }
-        }
-
-        /* --- Дробный сдвиг (теперь в тех же единицах, что и геометрия) --- */
-        y -= (lv_coord_t)lroundf(frac * (float)scroll_step_px);
-
-        int32_t y_rel = (int32_t)y - (int32_t)cy;
-        int32_t x = cx + anim_arc_x_from_y(y_rel);
-
-        /* позиционируем по вертикальному центру реальной высоты текста */
-        lv_coord_t ht = anim_text_h_for(txt, font);
-        lv_obj_set_pos(lab, (lv_coord_t)x, (lv_coord_t)(y - (ht / 2)));
-
-    }
-}
-
-
-
-static void anim_snap_exec_cb(void *var, int32_t v)
-{
-    (void)var;
-    float t = (float)v / 1024.0f;
-    anim_pos = anim_snap_ctx.from + (anim_snap_ctx.to - anim_snap_ctx.from) * t;
-    anim_selector_update();
-}
-
-static void anim_selector_snap_to_nearest(bool animate)
-{
-    if (J_ANIM_COUNT <= 0) return;
-
-    int target = (int)lroundf(anim_pos);
-    target = J_ANIM_CFG.cyclic ? anim_wrap_index(target) : anim_clamp_index(target);
-
-    if (!animate) {
-        anim_selector_apply_selection(target);
-        anim_selector_update();
-        return;
-    }
-
-        anim_snap_ctx.from = anim_pos;
-    anim_snap_ctx.to   = (float)target;
-    anim_snap_target   = target;
-
-    lv_anim_t a;
-    lv_anim_init(&a);
-    lv_anim_set_var(&a, NULL);
-    lv_anim_set_exec_cb(&a, anim_snap_exec_cb);
-    lv_anim_set_values(&a, 0, 1024);
-    lv_anim_set_time(&a, J_ANIM_CFG.snap_time_ms);
-    lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
-    lv_anim_set_ready_cb(&a, anim_snap_ready_cb);
-    lv_anim_start(&a);
-
-}
-
-static void anim_inertia_timer_cb(lv_timer_t *t)
-{
-    (void)t;
-
-    static uint32_t last_ms = 0;
-    uint32_t now = lv_tick_get();
-    if (last_ms == 0) last_ms = now;
-
-    float dt = (float)(now - last_ms) / 1000.0f;
-    if (dt < 0.001f) dt = 0.001f;
-    last_ms = now;
-
-    anim_pos += anim_vel * dt;
-        if (J_ANIM_CFG.cyclic && J_ANIM_COUNT > 0) {
-        /* keep anim_pos bounded */
-        while (anim_pos < 0.0f) anim_pos += (float)J_ANIM_COUNT;
-        while (anim_pos >= (float)J_ANIM_COUNT) anim_pos -= (float)J_ANIM_COUNT;
-    }
-
-
-    if (!J_ANIM_CFG.cyclic) {
-        if (anim_pos < 0.0f) { anim_pos = 0.0f; anim_vel = 0.0f; }
-        if (anim_pos > (float)(J_ANIM_COUNT - 1)) { anim_pos = (float)(J_ANIM_COUNT - 1); anim_vel = 0.0f; }
-    }
-
-    float k = 1.0f - (J_ANIM_CFG.decel_per_s * dt);
-    if (k < 0.05f) k = 0.05f;
-    if (k > 1.0f)  k = 1.0f;
-    anim_vel *= k;
-
-    anim_selector_update();
-
-    if (fabsf(anim_vel) < J_ANIM_CFG.vel_stop) {
-        anim_vel = 0.0f;
-        if (anim_inertia_timer) lv_timer_pause(anim_inertia_timer);
-        last_ms = 0;
-        anim_selector_snap_to_nearest(true);
-    }
-}
-
-static void anim_selector_event_cb(lv_event_t *e)
-{
-    lv_event_code_t code = lv_event_get_code(e);
-    lv_indev_t *indev = lv_indev_get_act();
-    if (!indev) return;
-
-    lv_point_t p;
-    lv_indev_get_point(indev, &p);
-
-    /* Scaled gesture thresholds */
-    const int lock_px = j_scale_px_i(J_ANIM_CFG.lock_px);
-
-
-    if (code == LV_EVENT_PRESSED) {
-        anim_dragging = true;
-        anim_axis_locked = false;
-        anim_lock_vertical = true;
-        anim_dragged_far = false;
-
-        anim_p_down = p;
-        anim_p_last = p;
-        anim_t_last_ms = lv_tick_get();
-
-        anim_vel = 0.0f;
-        if (anim_inertia_timer) lv_timer_pause(anim_inertia_timer);
-    }
-    else if (code == LV_EVENT_PRESSING && anim_dragging) {
-        int dx = p.x - anim_p_down.x;
-        int dy = p.y - anim_p_down.y;
-
-        if (!anim_axis_locked) {
-            int lock_px = j_scale_px_i(J_ANIM_CFG.lock_px);
-            if (abs(dx) > lock_px || abs(dy) > lock_px) {
-
-                anim_axis_locked = true;
-                anim_lock_vertical = (abs(dy) >= abs(dx));
-            }
-        }
-
-        int step_dy = p.y - anim_p_last.y;
-
-        uint32_t now = lv_tick_get();
-        float dt = (float)(now - anim_t_last_ms) / 1000.0f;
-        if (dt < 0.001f) dt = 0.001f;
-
-        if (anim_axis_locked && anim_lock_vertical) {
-            lv_coord_t step_px = (g_anim_scroll_step_px > 0) ? g_anim_scroll_step_px : (lv_coord_t)J_ANIM_CFG.item_spacing;
-            if (step_px <= 0) step_px = 1;
-
-            /* 1:1 feel: pixels -> items using real step */
-            float delta_items = (float)(-step_dy) / (float)step_px;
-            anim_pos += delta_items;
-
-            /* Instant velocity in items/s */
-            float v_inst = (delta_items / dt) * J_ANIM_CFG.inertia_strength;
-
-            /* Light smoothing for “iPhone feel” */
-            anim_vel = anim_vel * 0.70f + v_inst * 0.30f;
-
-
-            anim_selector_update();
-
-            if (abs(dy) > (lock_px * 2)) anim_dragged_far = true;
-        } else {
-            if (abs(dx) > (lock_px * 2)) anim_dragged_far = true;
-        }
-
-        anim_p_last = p;
-        anim_t_last_ms = now;
-    }
-    else if ((code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST) && anim_dragging) {
-        anim_dragging = false;
-
-        int total_dx = p.x - anim_p_down.x;
-
-        if (anim_axis_locked && !anim_lock_vertical) {
-            int horiz_step_px = j_scale_px_i(J_ANIM_CFG.horiz_step_px);
-            if (abs(total_dx) >= horiz_step_px) {
-
-                if (total_dx < 0) anim_selector_apply_selection(anim_index - 1);
-                else              anim_selector_apply_selection(anim_index + 1);
-
-                anim_selector_snap_to_nearest(true);
-            } else {
-                anim_selector_snap_to_nearest(true);
-            }
-        } else {
-            if (fabsf(anim_vel) > J_ANIM_CFG.vel_stop) {
-                if (anim_inertia_timer) lv_timer_resume(anim_inertia_timer);
-            } else {
-                anim_selector_snap_to_nearest(true);
-            }
-        }
-
-        if (anim_dragged_far) lv_event_stop_bubbling(e);
-    }
-}
-
-static void anim_selector_build(void)
-{
-    if (!animation_overlay) return;
-
-    anim_selector_area = lv_obj_create(animation_overlay);
-    lv_obj_set_style_bg_opa(anim_selector_area, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(anim_selector_area, 0, 0);
-    lv_obj_set_style_outline_width(anim_selector_area, 0, 0);
-    lv_obj_set_style_shadow_width(anim_selector_area, 0, 0);
-    lv_obj_set_style_pad_all(anim_selector_area, 0, 0);
-    lv_obj_set_style_radius(anim_selector_area, 0, 0);
-
-    lv_obj_set_size(anim_selector_area, g_screen_w, (lv_coord_t)(g_screen_h * 0.62f));
-    lv_obj_align(anim_selector_area, LV_ALIGN_CENTER, J_ANIM_POS_X, J_ANIM_POS_Y);
-    make_invisible_hit_area(anim_selector_area);
-    lv_obj_add_flag(anim_selector_area, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_add_flag(anim_selector_area, LV_OBJ_FLAG_EVENT_BUBBLE);
-
-    lv_obj_add_event_cb(anim_selector_area, anim_selector_event_cb, LV_EVENT_PRESSED, NULL);
-    lv_obj_add_event_cb(anim_selector_area, anim_selector_event_cb, LV_EVENT_PRESSING, NULL);
-    lv_obj_add_event_cb(anim_selector_area, anim_selector_event_cb, LV_EVENT_RELEASED, NULL);
-    lv_obj_add_event_cb(anim_selector_area, anim_selector_event_cb, LV_EVENT_PRESS_LOST, NULL);
-
-    for (int i = 0; i < J_ANIM_VISIBLE_ITEMS; i++) {
-    anim_labels[i] = lv_label_create(anim_selector_area);
-    lv_obj_set_style_text_align(anim_labels[i], LV_TEXT_ALIGN_LEFT, 0);
-    lv_label_set_long_mode(anim_labels[i], LV_LABEL_LONG_CLIP);
-    lv_obj_set_width(anim_labels[i], g_screen_w);
-    lv_label_set_text(anim_labels[i], "...");
-}
-
-
-    if (!anim_inertia_timer) {
-        anim_inertia_timer = lv_timer_create(anim_inertia_timer_cb, 16, NULL);
-        lv_timer_pause(anim_inertia_timer);
-    } else {
-        lv_timer_pause(anim_inertia_timer);
-    }
-
-    int start = 0;
-    for (int i = 0; i < J_ANIM_COUNT; i++) {
-        if (g_current_device.mode && (strcmp(g_current_device.mode, g_animation_list[i]) == 0)) {
-            start = i;
-            break;
-        }
-    }
-    anim_selector_apply_selection(start);
-    anim_selector_update();
-}
-
-/* ============================================================
- *        ANIMATION OVERLAY
- * ============================================================*/
-
-static void animation_overlay_open(void)
-{
-    if (animation_overlay) return;
-    ui_active_dev_set_overlay(true);
-
-    lv_disp_t *disp = lv_disp_get_default();
-    if (!disp) {
-        LV_LOG_ERROR("animation_overlay_open: no default display");
-        ui_active_dev_set_overlay(false);
-        return;
-    }
-
-    if (g_screen_size == 0 || g_screen_w == 0 || g_screen_h == 0) {
-        lv_coord_t w = lv_disp_get_hor_res(disp);
-        lv_coord_t h = lv_disp_get_ver_res(disp);
-        g_screen_w    = w;
-        g_screen_h    = h;
-        g_screen_size = (w < h) ? w : h;
-    }
-
-    /* Create overlay on top layer (MUST exist) */
-    lv_obj_t *top = lv_layer_top();
-    if (!top) {
-        LV_LOG_ERROR("animation_overlay_open: lv_layer_top() is NULL");
-        ui_active_dev_set_overlay(false);
-        return;
-    }
-
-    animation_overlay = lv_obj_create(top);
-    if (!animation_overlay) {
-        LV_LOG_ERROR("animation_overlay_open: lv_obj_create(top) returned NULL");
-        ui_active_dev_set_overlay(false);
-        return;
-    }
-
-    lv_obj_set_size(animation_overlay, g_screen_w, g_screen_h);
-    lv_obj_center(animation_overlay);
-
-    /* HARD blackout: no borders, no outlines, no padding, no radius */
-    lv_obj_set_style_bg_opa(animation_overlay, LV_OPA_COVER, 0);
-    lv_obj_set_style_bg_color(animation_overlay, lv_color_hex(0x000000), 0);
-    lv_obj_set_style_border_width(animation_overlay, 0, 0);
-    lv_obj_set_style_outline_width(animation_overlay, 0, 0);
-    lv_obj_set_style_shadow_width(animation_overlay, 0, 0);
-    lv_obj_set_style_pad_all(animation_overlay, 0, 0);
-    lv_obj_set_style_radius(animation_overlay, 0, 0);
-
-    lv_obj_clear_flag(animation_overlay, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_flag(animation_overlay, LV_OBJ_FLAG_CLICKABLE);
-
-    lv_obj_add_event_cb(animation_overlay, animation_overlay_event_cb, LV_EVENT_CLICKED, NULL);
-
-    /* Build selector now */
-    anim_selector_build();
-    /* Example: make wheel slightly bigger */
-    anim_wheel_set_scale(1.30f); //Размер колеса анимации экрана лампы
-
-
-    /* Force layout/coords to be valid before first anim_selector_update() */
-    lv_obj_update_layout(animation_overlay);
-    if (anim_selector_area) lv_obj_update_layout(anim_selector_area);
-
-#if LVGL_VERSION_MAJOR >= 8
-    lv_refr_now(lv_disp_get_default());
-#endif
-
-    anim_selector_update();
-}
-
-
-static void animation_overlay_close(void)
-{
-    /* Stop motion first */
-    if (anim_inertia_timer) lv_timer_pause(anim_inertia_timer);
-
-    /* Reset gesture / motion state */
-    anim_vel = 0.0f;
-    anim_dragging = false;
-    anim_axis_locked = false;
-    anim_lock_vertical = true;
-    anim_dragged_far = false;
-    anim_t_last_ms = 0;
-
-    /* Reset double-tap timing (avoid carry-over between opens) */
-    g_anim_last_click_ms = 0;
-
-    /* Invalidate pointers (objects will be deleted with overlay) */
-    anim_selector_area = NULL;
-    for (int i = 0; i < J_ANIM_VISIBLE_ITEMS; i++) anim_labels[i] = NULL;
-
-    /* Drop overlay flag BEFORE delete is fine too, but be consistent */
-    ui_active_dev_set_overlay(false);
-
-    /* Delete overlay */
-    j_lv_obj_del_safe(&animation_overlay);
-}
-
-
-
-static void animation_overlay_event_cb(lv_event_t *e)
-{
-    lv_event_code_t code = lv_event_get_code(e);
-
-    if (code == LV_EVENT_CLICKED) {
-        uint32_t now = lv_tick_get();
-
-        if (g_anim_last_click_ms != 0 &&
-            lv_tick_elaps(g_anim_last_click_ms) < J_DOUBLE_TAP_MS) {
-            g_anim_last_click_ms = 0;
-            LV_LOG_USER("Animation overlay: double tap -> close");
-            animation_overlay_close();
-        } else {
-            g_anim_last_click_ms = now;
-        }
-    }
-}
 
 /* ============================================================
  *        DIAG SCREEN
@@ -2421,6 +1710,18 @@ void app_main(void)
     screen_device    = ui_create_device_screen();
     screen_diag      = ui_create_diag_screen();
     screen_honeycomb = ui_create_honeycomb_screen();
+
+        /* Bind animation overlay module to current app context */
+    ui_anim_overlay_bind_t anim_bind = {
+        .p_screen_w       = &g_screen_w,
+        .p_screen_h       = &g_screen_h,
+        .p_screen_size    = &g_screen_size,
+        .set_overlay      = ui_anim_set_overlay,
+        .set_mode         = ui_anim_set_mode,
+        .request_refresh  = ui_anim_request_refresh,
+    };
+    ui_anim_overlay_init(&anim_bind);
+
 
     /* Bind screens into device registry */
     ui_devices_init_registry();
