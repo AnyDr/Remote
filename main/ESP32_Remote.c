@@ -215,9 +215,6 @@ typedef enum {
     DEV_PWR_VIEW_COUNT
 } dev_pwr_view_mode_t;
 
-static dev_temp_view_mode_t g_dev_temp_view_mode = DEV_TEMP_VIEW_CURRENT;
-static dev_pwr_view_mode_t  g_dev_pwr_view_mode  = DEV_PWR_VIEW_CURRENT;
-
 
 static const j_label_cfg_t J_LABEL_CFG_NAME = {
     .font       = J_FONT_DEVICE_NAME,
@@ -319,8 +316,6 @@ static lv_coord_t g_screen_h    = 0;
 static lv_coord_t g_screen_size = 0;
 static lv_coord_t g_arc_size    = 0;
 
-static int16_t g_brightness_percent = 30;
-static int16_t g_speed_percent      = 20;
 
 static uint32_t g_center_last_click_ms = 0;
 static uint32_t g_honey_center_last_click_ms = 0;
@@ -351,6 +346,7 @@ typedef struct {
     void      (*refresh)(j_dev_ctx_t *d);
 } j_dev_drv_t;
 
+// ===== BEGIN PATCH: per-device UI state in ctx =====
 struct j_dev_ctx {
     const j_dev_drv_t *drv;
     lv_obj_t          *root;
@@ -360,7 +356,15 @@ struct j_dev_ctx {
     uint8_t            overlay_depth; /* number of active overlays (0 = none) */
 
     device_state_t    *st;
+
+    /* Per-device UI state (must NOT be global) */
+    int16_t            brightness_percent; /* 0..100 */
+    int16_t            speed_percent;      /* 0..100 */
+    dev_temp_view_mode_t dev_temp_view_mode;
+    dev_pwr_view_mode_t  dev_pwr_view_mode;
 };
+// ===== END PATCH =====
+
 
 
 /* NOTE:
@@ -388,8 +392,8 @@ static inline j_dev_ctx_t *j_active_dev(void)
     return &g_devs[g_active_dev_idx];
 }
 
-// ===== BEGIN PATCH: find device ctx by root =====
-static j_dev_ctx_t *j_dev_find_by_root(lv_obj_t *root)
+// ===== BEGIN PATCH: find device ctx by root screen =====
+static inline j_dev_ctx_t *j_dev_find_by_root(lv_obj_t *root)
 {
     if (!root) return NULL;
     for (int i = 0; i < g_dev_count; i++) {
@@ -397,6 +401,22 @@ static j_dev_ctx_t *j_dev_find_by_root(lv_obj_t *root)
     }
     return NULL;
 }
+// ===== END PATCH =====
+
+
+// ===== BEGIN PATCH: find device ctx by root =====
+#if 0
+static j_dev_ctx_t *j_dev_find_by_root(lv_obj_t *root)
+{
+    if (!root) return NULL;
+    for (int i = 0; i < g_dev_count; i++) {
+        if (g_devs[i].root == root) return &g_devs[i];
+    } 
+
+
+    return NULL;
+}
+#endif
 // ===== END PATCH =====
 
 
@@ -454,6 +474,14 @@ static int j_dev_insert_before_diag(lv_obj_t *root, device_state_t *st)
     g_devs[insert_at].stack_depth   = 0;
     g_devs[insert_at].overlay_depth = 0;
     g_devs[insert_at].st            = st;
+
+        // ===== BEGIN PATCH: init per-device UI state =====
+    g_devs[insert_at].brightness_percent = 30;
+    g_devs[insert_at].speed_percent      = 20;
+    g_devs[insert_at].dev_temp_view_mode = DEV_TEMP_VIEW_CURRENT;
+    g_devs[insert_at].dev_pwr_view_mode  = DEV_PWR_VIEW_CURRENT;
+    // ===== END PATCH =====
+
 
 
     g_dev_count++;
@@ -738,15 +766,21 @@ static void honeycomb_bottom_dev_container_event_cb(lv_event_t *e)
 
     lv_coord_t mid_x = (a.x1 + a.x2) / 2;
 
+        // ===== BEGIN PATCH: per-device bottom modes =====
+    j_dev_ctx_t *d = ui_active_dev_ctx();
+    if (!d) return;
+
     if (p.x <= mid_x) {
-        g_dev_temp_view_mode =
-            (dev_temp_view_mode_t)((g_dev_temp_view_mode + 1) % DEV_TEMP_VIEW_COUNT);
-        LV_LOG_USER("HoneyComb dev temp view -> %d", (int)g_dev_temp_view_mode);
+        d->dev_temp_view_mode =
+            (dev_temp_view_mode_t)((d->dev_temp_view_mode + 1) % DEV_TEMP_VIEW_COUNT);
+        LV_LOG_USER("Dev temp view -> %d", (int)d->dev_temp_view_mode);
     } else {
-        g_dev_pwr_view_mode =
-            (dev_pwr_view_mode_t)((g_dev_pwr_view_mode + 1) % DEV_PWR_VIEW_COUNT);
-        LV_LOG_USER("HoneyComb dev power view -> %d", (int)g_dev_pwr_view_mode);
+        d->dev_pwr_view_mode =
+            (dev_pwr_view_mode_t)((d->dev_pwr_view_mode + 1) % DEV_PWR_VIEW_COUNT);
+        LV_LOG_USER("Dev power view -> %d", (int)d->dev_pwr_view_mode);
     }
+    // ===== END PATCH =====
+
 
     ui_refresh_all_screens();
 }
@@ -914,9 +948,13 @@ static void brightness_overlay_arc_event_cb(lv_event_t *e)
     if (code == LV_EVENT_VALUE_CHANGED) {
         lv_obj_t *arc = lv_event_get_target(e);
         int16_t v = lv_arc_get_value(arc);
-        g_brightness_percent = v;
+                // ===== BEGIN PATCH: per-device brightness percent =====
+        j_dev_ctx_t *d = ui_active_dev_ctx();
+        if (d) d->brightness_percent = v;
         LV_LOG_USER("Brightness overlay value = %d%%", v);
         update_compact_arcs_from_percent();
+        // ===== END PATCH =====
+
     }
 }
 
@@ -926,9 +964,13 @@ static void speed_overlay_arc_event_cb(lv_event_t *e)
     if (code == LV_EVENT_VALUE_CHANGED) {
         lv_obj_t *arc = lv_event_get_target(e);
         int16_t v = lv_arc_get_value(arc);
-        g_speed_percent = v;
+                // ===== BEGIN PATCH: per-device speed percent =====
+        j_dev_ctx_t *d = ui_active_dev_ctx();
+        if (d) d->speed_percent = v;
         LV_LOG_USER("Speed overlay value = %d%%", v);
         update_compact_arcs_from_percent();
+        // ===== END PATCH =====
+
     }
 }
 
@@ -960,15 +1002,21 @@ static void bottom_dev_container_event_cb(lv_event_t *e)
 
     lv_coord_t mid_x = (a.x1 + a.x2) / 2;
 
+        // ===== BEGIN PATCH: per-device bottom modes (HoneyComb) =====
+    j_dev_ctx_t *d = ui_active_dev_ctx();
+    if (!d) return;
+
     if (p.x <= mid_x) {
-        g_dev_temp_view_mode =
-            (dev_temp_view_mode_t)((g_dev_temp_view_mode + 1) % DEV_TEMP_VIEW_COUNT);
-        LV_LOG_USER("Dev temp view -> %d", (int)g_dev_temp_view_mode);
+        d->dev_temp_view_mode =
+            (dev_temp_view_mode_t)((d->dev_temp_view_mode + 1) % DEV_TEMP_VIEW_COUNT);
+        LV_LOG_USER("HoneyComb dev temp view -> %d", (int)d->dev_temp_view_mode);
     } else {
-        g_dev_pwr_view_mode =
-            (dev_pwr_view_mode_t)((g_dev_pwr_view_mode + 1) % DEV_PWR_VIEW_COUNT);
-        LV_LOG_USER("Dev power view -> %d", (int)g_dev_pwr_view_mode);
+        d->dev_pwr_view_mode =
+            (dev_pwr_view_mode_t)((d->dev_pwr_view_mode + 1) % DEV_PWR_VIEW_COUNT);
+        LV_LOG_USER("HoneyComb dev power view -> %d", (int)d->dev_pwr_view_mode);
     }
+    // ===== END PATCH =====
+
 
     ui_refresh_all_screens();
 }
@@ -1211,6 +1259,17 @@ static void device_screen_update_from_state(void)
 {
     // ===== BEGIN PATCH: screen-specific state via registry =====
     const device_state_t *st = &g_current_device;
+        // ===== BEGIN PATCH: fetch per-device UI state for Lamp screen =====
+    dev_temp_view_mode_t temp_mode = DEV_TEMP_VIEW_CURRENT;
+    dev_pwr_view_mode_t  pwr_mode  = DEV_PWR_VIEW_CURRENT;
+
+    j_dev_ctx_t *d_ui = j_dev_find_by_root(screen_device);
+    if (d_ui) {
+        temp_mode = d_ui->dev_temp_view_mode;
+        pwr_mode  = d_ui->dev_pwr_view_mode;
+    }
+    // ===== END PATCH =====
+
     j_dev_ctx_t *d = j_dev_find_by_root(screen_device);
     if (d && d->st) st = d->st;
 // ===== END PATCH =====
@@ -1253,7 +1312,7 @@ static void device_screen_update_from_state(void)
     char buf_temp[32];
     char buf_power[32];
 
-    switch (g_dev_temp_view_mode) {
+    switch (temp_mode) {
     case DEV_TEMP_VIEW_CURRENT:
     default:
         lv_snprintf(buf_temp, sizeof(buf_temp), "Dev: %.1f°C", st->device_temp);
@@ -1266,7 +1325,7 @@ static void device_screen_update_from_state(void)
         break;
     }
 
-    switch (g_dev_pwr_view_mode) {
+    switch (pwr_mode) {
     case DEV_PWR_VIEW_CURRENT:
     default:
         lv_snprintf(buf_power, sizeof(buf_power), "%.1f W", st->power_w);
@@ -1299,6 +1358,17 @@ static void honeycomb_screen_update_from_state(void)
 {
     // ===== BEGIN PATCH: screen-specific state via registry =====
     const device_state_t *st = &g_current_device;
+        // ===== BEGIN PATCH: fetch per-device UI state for HoneyComb screen =====
+    dev_temp_view_mode_t temp_mode = DEV_TEMP_VIEW_CURRENT;
+    dev_pwr_view_mode_t  pwr_mode  = DEV_PWR_VIEW_CURRENT;
+
+    j_dev_ctx_t *d_ui = j_dev_find_by_root(screen_honeycomb);
+    if (d_ui) {
+        temp_mode = d_ui->dev_temp_view_mode;
+        pwr_mode  = d_ui->dev_pwr_view_mode;
+    }
+    // ===== END PATCH =====
+
     j_dev_ctx_t *d = j_dev_find_by_root(screen_honeycomb);
     if (d && d->st) st = d->st;
 // ===== END PATCH =====
@@ -1320,7 +1390,7 @@ static void honeycomb_screen_update_from_state(void)
     char buf_temp[32];
     char buf_power[32];
 
-    switch (g_dev_temp_view_mode) {
+    switch (temp_mode) {
     case DEV_TEMP_VIEW_CURRENT:
     default:
         lv_snprintf(buf_temp, sizeof(buf_temp), "Dev: %.1f°C", st->device_temp);
@@ -1333,7 +1403,7 @@ static void honeycomb_screen_update_from_state(void)
         break;
     }
 
-    switch (g_dev_pwr_view_mode) {
+    switch (pwr_mode) {
     case DEV_PWR_VIEW_CURRENT:
     default:
         lv_snprintf(buf_power, sizeof(buf_power), "%.1f W", st->power_w);
@@ -1362,8 +1432,13 @@ static void honeycomb_screen_update_from_state(void)
 
     ui_dev_honeycomb_set_arc_colors(bright_col, J_COLOR_SPEED_ARC);
 
-    /* Angles come from global percent values */
-    ui_dev_honeycomb_set_arc_percent(g_brightness_percent, g_speed_percent);
+    // ===== BEGIN PATCH: HoneyComb arcs from its own ctx =====
+    j_dev_ctx_t *d_hc = j_dev_find_by_root(screen_honeycomb);
+    int16_t bp = d_hc ? d_hc->brightness_percent : 30;
+    int16_t sp = d_hc ? d_hc->speed_percent      : 20;
+    ui_dev_honeycomb_set_arc_percent(bp, sp);
+// ===== END PATCH =====
+
 }
 
 
@@ -1374,24 +1449,50 @@ static void honeycomb_screen_update_from_state(void)
 
 static void update_compact_arcs_from_percent(void)
 {
-    if (g_brightness_percent < 0)   g_brightness_percent = 0;
-    if (g_brightness_percent > 100) g_brightness_percent = 100;
-    if (g_speed_percent < 0)        g_speed_percent = 0;
-    if (g_speed_percent > 100)      g_speed_percent = 100;
+    /* Lamp arcs (lv_arc objects) */
+    if (brightness_arc && speed_arc) {
+        j_dev_ctx_t *d_lamp = j_dev_find_by_root(screen_device);
 
-    int16_t b_start = BRIGHTNESS_ARC_START;
-    int16_t b_end   = BRIGHTNESS_ARC_END;
-    int16_t b_angle = b_start + (b_end - b_start) * g_brightness_percent / 100;
+        int16_t bp = d_lamp ? d_lamp->brightness_percent : 30;
+        int16_t sp = d_lamp ? d_lamp->speed_percent      : 20;
 
-    int16_t s_start = SPEED_ARC_START;
-    int16_t s_end   = SPEED_ARC_END;
-    int16_t s_angle = s_start + (s_end - s_start) * g_speed_percent / 100;
+        if (bp < 0)   bp = 0;
+        if (bp > 100) bp = 100;
 
-    lv_arc_set_angles(brightness_arc, b_start, b_angle);
-    lv_arc_set_angles(speed_arc,      s_start, s_angle);
-    ui_dev_honeycomb_set_arc_percent(g_brightness_percent, g_speed_percent);
+        if (sp < 0)   sp = 0;
+        if (sp > 100) sp = 100;
 
+
+        int16_t b_start = BRIGHTNESS_ARC_START;
+        int16_t b_end   = BRIGHTNESS_ARC_END;
+        int16_t b_angle = b_start + (b_end - b_start) * bp / 100;
+
+        int16_t s_start = SPEED_ARC_START;
+        int16_t s_end   = SPEED_ARC_END;
+        int16_t s_angle = s_start + (s_end - s_start) * sp / 100;
+
+        lv_arc_set_angles(brightness_arc, b_start, b_angle);
+        lv_arc_set_angles(speed_arc,      s_start, s_angle);
+    }
+
+    /* HoneyComb arcs (module) */
+    if (screen_honeycomb) {
+        j_dev_ctx_t *d_hc = j_dev_find_by_root(screen_honeycomb);
+
+        int16_t bp = d_hc ? d_hc->brightness_percent : 30;
+        int16_t sp = d_hc ? d_hc->speed_percent      : 20;
+
+        if (bp < 0)   bp = 0;
+        if (bp > 100) bp = 100;
+
+        if (sp < 0)   sp = 0;
+        if (sp > 100) sp = 100;
+
+
+        ui_dev_honeycomb_set_arc_percent(bp, sp);
+    }
 }
+
 
 /* ============================================================
  *        FULL-SCREEN BRIGHTNESS OVERLAY
@@ -1459,7 +1560,9 @@ static void brightness_overlay_open(void)
     lv_obj_center(arc);
 
     lv_arc_set_range(arc, 0, 100);
-    lv_arc_set_value(arc, g_brightness_percent);
+        j_dev_ctx_t *d = ui_active_dev_ctx();
+    int16_t v0 = d ? d->brightness_percent : 30;
+    lv_arc_set_value(arc, v0);
     lv_arc_set_bg_angles(arc, 0, 360);
 
     lv_obj_remove_style(arc, NULL, LV_PART_KNOB);
@@ -1556,7 +1659,9 @@ static void speed_overlay_open(void)
     lv_obj_center(arc);
 
     lv_arc_set_range(arc, 0, 100);
-    lv_arc_set_value(arc, g_speed_percent);
+        j_dev_ctx_t *d = ui_active_dev_ctx();
+    int16_t v0 = d ? d->speed_percent : 20;
+    lv_arc_set_value(arc, v0);
     lv_arc_set_bg_angles(arc, 0, 360);
 
     lv_obj_remove_style(arc, NULL, LV_PART_KNOB);
@@ -1777,7 +1882,21 @@ static lv_obj_t *ui_create_diag_screen(void)
 static void ui_devices_init_registry(void)
 {
     g_dev_count = 0;
+        // ===== BEGIN PATCH: Lamp UI state =====
+    g_devs[0].brightness_percent = 30;
+    g_devs[0].speed_percent      = 20;
+    g_devs[0].dev_temp_view_mode = DEV_TEMP_VIEW_CURRENT;
+    g_devs[0].dev_pwr_view_mode  = DEV_PWR_VIEW_CURRENT;
+    // ===== END PATCH =====
+
     g_active_dev_idx = 0;
+        // ===== BEGIN PATCH: Diag UI state (unused, but keep deterministic) =====
+    g_devs[1].brightness_percent = 30;
+    g_devs[1].speed_percent      = 20;
+    g_devs[1].dev_temp_view_mode = DEV_TEMP_VIEW_CURRENT;
+    g_devs[1].dev_pwr_view_mode  = DEV_PWR_VIEW_CURRENT;
+    // ===== END PATCH =====
+
 
     /* Lamp */
     g_devs[0].drv          = NULL;
