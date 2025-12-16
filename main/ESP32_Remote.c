@@ -25,6 +25,8 @@
 #include "esp_log.h"
 #include "j_ui_utils.h"
 #include "ui_anim_overlay.h"
+#include "ui_dev_honeycomb.h"
+
 
 
 
@@ -295,7 +297,6 @@ static int16_t g_brightness_percent = 30;
 static int16_t g_speed_percent      = 20;
 
 static uint32_t g_center_last_click_ms = 0;
-static uint32_t g_anim_last_click_ms   = 0;
 
 /* ============================================================
  *        DEVICE ARCH (STEP 1): TYPES ONLY, NO BEHAVIOR
@@ -454,8 +455,6 @@ static void bottom_dev_container_event_cb(lv_event_t *e);
 static lv_obj_t *ui_create_device_screen(void);
 static void      diag_screen_update_from_state(void);
 static lv_obj_t *ui_create_diag_screen(void);
-static lv_obj_t *ui_create_honeycomb_screen(void);
-
 
 static void device_screen_switch_to_next(void);
 static void device_screen_switch_to_prev(void);
@@ -1571,48 +1570,6 @@ static lv_obj_t *ui_create_diag_screen(void)
     return screen_diag;
 }
 
-/* ============================================================
- *        HONEYCOMB SCREEN (STUB)
- * ============================================================*/
-
-static lv_obj_t *ui_create_honeycomb_screen(void)
-{
-    lv_disp_t *disp = lv_disp_get_default();
-    if (!disp) {
-        LV_LOG_ERROR("No default display for honeycomb");
-        return NULL;
-    }
-
-    lv_coord_t w = lv_disp_get_hor_res(disp);
-    lv_coord_t h = lv_disp_get_ver_res(disp);
-
-    screen_honeycomb = lv_obj_create(NULL);
-    lv_obj_clear_flag(screen_honeycomb, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_scrollbar_mode(screen_honeycomb, LV_SCROLLBAR_MODE_OFF);
-    lv_obj_set_style_border_width(screen_honeycomb, 0, 0);
-    lv_obj_set_style_outline_width(screen_honeycomb, 0, 0);
-    lv_obj_set_size(screen_honeycomb, w, h);
-    lv_obj_center(screen_honeycomb);
-
-    lv_obj_set_style_bg_color(screen_honeycomb, lv_color_hex(0x0A0A0A), 0);
-    lv_obj_set_style_bg_opa(screen_honeycomb, LV_OPA_COVER, 0);
-    lv_obj_set_style_text_color(screen_honeycomb, J_COLOR_TEXT_MAIN, 0);
-
-    /* Enable global swipe on this screen too */
-    lv_obj_add_event_cb(screen_honeycomb, screen_touch_event_cb, LV_EVENT_PRESSED, NULL);
-    lv_obj_add_event_cb(screen_honeycomb, screen_touch_event_cb, LV_EVENT_PRESSING, NULL);
-    lv_obj_add_event_cb(screen_honeycomb, screen_touch_event_cb, LV_EVENT_RELEASED, NULL);
-    lv_obj_add_event_cb(screen_honeycomb, screen_touch_event_cb, LV_EVENT_PRESS_LOST, NULL);
-
-
-    lv_obj_t *title = lv_label_create(screen_honeycomb);
-    lv_label_set_text(title, "HoneyComb\n(stub)");
-    lv_obj_set_style_text_align(title, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_text_font(title, J_FONT_DIAG_TITLE, 0);
-    lv_obj_center(title);
-
-    return screen_honeycomb;
-}
 
 static void ui_devices_init_registry(void)
 {
@@ -1709,7 +1666,17 @@ void app_main(void)
     /* Create screens (lv_obj_create(NULL)) */
     screen_device    = ui_create_device_screen();
     screen_diag      = ui_create_diag_screen();
-    screen_honeycomb = ui_create_honeycomb_screen();
+    
+    ui_dev_honeycomb_cfg_t hc_cfg = {
+    .swipe_cb    = screen_touch_event_cb,
+    .title_font  = J_FONT_DIAG_TITLE,
+    .bg_color    = lv_color_hex(0x0A0A0A),
+    .text_color  = J_COLOR_TEXT_MAIN,
+    .title_text  = "HoneyComb\n(stub)",
+};
+
+screen_honeycomb = ui_dev_honeycomb_create(&hc_cfg);
+
 
         /* Bind animation overlay module to current app context */
     ui_anim_overlay_bind_t anim_bind = {

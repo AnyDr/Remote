@@ -1,6 +1,7 @@
 idf_component_register(
     SRCS
         "./ESP32_Remote.c"
+        "./ui_dev_honeycomb.c"
         "./EXIO/TCA9554PWR.c"
         "./Audio_Driver/PCM5101.c"
         "./MIC_Driver/MIC_Speech.c"
