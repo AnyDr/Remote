@@ -297,6 +297,8 @@ static int16_t g_brightness_percent = 30;
 static int16_t g_speed_percent      = 20;
 
 static uint32_t g_center_last_click_ms = 0;
+static uint32_t g_honey_center_last_click_ms = 0;
+
 
 /* ============================================================
  *        DEVICE ARCH (STEP 1): TYPES ONLY, NO BEHAVIOR
@@ -438,7 +440,11 @@ static void brightness_overlay_close(void);
 static void speed_overlay_open(void);
 static void speed_overlay_close(void);
 
+static void honeycomb_screen_update_from_state(void);
+static void ui_refresh_all_screens(void);
 
+static void honeycomb_center_event_cb(lv_event_t *e);
+static void honeycomb_bottom_dev_container_event_cb(lv_event_t *e);
 
 static void center_event_cb(lv_event_t *e);
 static void screen_touch_event_cb(lv_event_t *e);
@@ -484,11 +490,17 @@ static void ui_anim_set_mode(const char *mode_str)
 
 static void ui_anim_request_refresh(void)
 {
-    /* Minimal + safe: refresh only if device screen is currently active */
-    if (screen_device && (lv_scr_act() == screen_device)) {
-        device_screen_update_from_state();
-    }
+    /* Safe: keep both screens in sync */
+    ui_refresh_all_screens();
 }
+
+
+static void ui_refresh_all_screens(void)
+{
+    if (screen_device)    device_screen_update_from_state();
+    if (screen_honeycomb) honeycomb_screen_update_from_state();
+}
+
 
 static bool ui_global_swipe_blocked(void)
 {
@@ -626,9 +638,66 @@ static void center_event_cb(lv_event_t *e)
     else if (code == LV_EVENT_LONG_PRESSED) {
         g_current_device.is_on = !g_current_device.is_on;
         LV_LOG_USER("Center long press: toggle power -> %d", g_current_device.is_on);
-        device_screen_update_from_state();
+        ui_refresh_all_screens();
+
     }
 }
+
+static void honeycomb_center_event_cb(lv_event_t *e)
+{
+    lv_event_code_t code = lv_event_get_code(e);
+
+    if (code == LV_EVENT_CLICKED) {
+        uint32_t now = lv_tick_get();
+
+        if (g_honey_center_last_click_ms != 0 &&
+            lv_tick_elaps(g_honey_center_last_click_ms) < J_DOUBLE_TAP_MS) {
+
+            g_honey_center_last_click_ms = 0;
+            LV_LOG_USER("HoneyComb center double click: open animation overlay");
+            ui_anim_overlay_open();
+        } else {
+            g_honey_center_last_click_ms = now;
+            LV_LOG_USER("HoneyComb center single click: (not implemented yet)");
+        }
+    }
+    else if (code == LV_EVENT_LONG_PRESSED) {
+        g_current_device.is_on = !g_current_device.is_on;
+        LV_LOG_USER("HoneyComb center long press: toggle power -> %d", g_current_device.is_on);
+        ui_refresh_all_screens();
+    }
+}
+
+static void honeycomb_bottom_dev_container_event_cb(lv_event_t *e)
+{
+    lv_event_code_t code = lv_event_get_code(e);
+    if (code != LV_EVENT_CLICKED) return;
+
+    lv_indev_t *indev = lv_indev_get_act();
+    if (!indev) return;
+
+    lv_point_t p;
+    lv_indev_get_point(indev, &p);
+
+    lv_obj_t *obj = lv_event_get_target(e);
+    lv_area_t a;
+    lv_obj_get_coords(obj, &a);
+
+    lv_coord_t mid_x = (a.x1 + a.x2) / 2;
+
+    if (p.x <= mid_x) {
+        g_dev_temp_view_mode =
+            (dev_temp_view_mode_t)((g_dev_temp_view_mode + 1) % DEV_TEMP_VIEW_COUNT);
+        LV_LOG_USER("HoneyComb dev temp view -> %d", (int)g_dev_temp_view_mode);
+    } else {
+        g_dev_pwr_view_mode =
+            (dev_pwr_view_mode_t)((g_dev_pwr_view_mode + 1) % DEV_PWR_VIEW_COUNT);
+        LV_LOG_USER("HoneyComb dev power view -> %d", (int)g_dev_pwr_view_mode);
+    }
+
+    ui_refresh_all_screens();
+}
+
 
 static void screen_touch_event_cb(lv_event_t *e)
 {
@@ -816,7 +885,8 @@ static void room_container_event_cb(lv_event_t *e)
     if (code == LV_EVENT_CLICKED) {
         g_room_view_mode = (room_view_mode_t)((g_room_view_mode + 1) % ROOM_VIEW_COUNT);
         LV_LOG_USER("Room view mode changed -> %d", (int)g_room_view_mode);
-        device_screen_update_from_state();
+        ui_refresh_all_screens();
+
     }
 }
 
@@ -847,7 +917,7 @@ static void bottom_dev_container_event_cb(lv_event_t *e)
         LV_LOG_USER("Dev power view -> %d", (int)g_dev_pwr_view_mode);
     }
 
-    device_screen_update_from_state();
+    ui_refresh_all_screens();
 }
 
 /* ============================================================
@@ -1167,6 +1237,74 @@ static void device_screen_update_from_state(void)
     update_compact_arcs_from_percent();
 }
 
+static void honeycomb_screen_update_from_state(void)
+{
+    const device_state_t *st = &g_current_device;
+
+    /* Same logic as Lamp for colors */
+    lv_color_t mode_color = st->is_on
+        ? lv_color_hex(J_MODE_COLOR_ACTIVE_HEX)
+        : lv_color_hex(0x808080);
+
+    lv_color_t status_color;
+    if (st->is_online && st->is_on) status_color = J_COLOR_STATUS_OK;
+    else if (!st->is_online)        status_color = J_COLOR_STATUS_WARN;
+    else                            status_color = J_COLOR_STATUS_OFF;
+
+    ui_dev_honeycomb_set_center_text(st->name, st->mode);
+    ui_dev_honeycomb_set_center_colors(status_color, mode_color);
+
+    char buf_temp[32];
+    char buf_power[32];
+
+    switch (g_dev_temp_view_mode) {
+    case DEV_TEMP_VIEW_CURRENT:
+    default:
+        lv_snprintf(buf_temp, sizeof(buf_temp), "Dev: %.1f°C", st->device_temp);
+        break;
+    case DEV_TEMP_VIEW_MAX_TODAY:
+        lv_snprintf(buf_temp, sizeof(buf_temp), "Max today:\n%.1f°C", st->device_temp_max_today);
+        break;
+    case DEV_TEMP_VIEW_MAX_EVER:
+        lv_snprintf(buf_temp, sizeof(buf_temp), "Max ever:\n%.1f°C", st->device_temp_max_ever);
+        break;
+    }
+
+    switch (g_dev_pwr_view_mode) {
+    case DEV_PWR_VIEW_CURRENT:
+    default:
+        lv_snprintf(buf_power, sizeof(buf_power), "%.1f W", st->power_w);
+        break;
+    case DEV_PWR_VIEW_MAX:
+        lv_snprintf(buf_power, sizeof(buf_power), "Max:\n%.1f W", st->power_w_max);
+        break;
+    case DEV_PWR_VIEW_COST: {
+        float p_kw = st->power_w / 1000.0f;
+        float cost_per_hour = p_kw * st->energy_price_eur_per_kwh;
+        lv_snprintf(buf_power, sizeof(buf_power), "Cost:\n€%.3f/h", cost_per_hour);
+        break;
+    }
+    }
+
+    ui_dev_honeycomb_set_bottom_text(buf_temp, buf_power);
+
+    /* Brightness arc color same as Lamp */
+    float ratio = 0.0f;
+    if (st->lamp_theoretical_w > 0.0f) ratio = st->psu_max_w / st->lamp_theoretical_w;
+
+    lv_color_t bright_col;
+    if (ratio < 0.7f)       bright_col = J_COLOR_ARC_SAFE;
+    else if (ratio < 0.95f) bright_col = J_COLOR_ARC_WARN;
+    else                    bright_col = J_COLOR_ARC_DANGER;
+
+    ui_dev_honeycomb_set_arc_colors(bright_col, J_COLOR_SPEED_ARC);
+
+    /* Angles come from global percent values */
+    ui_dev_honeycomb_set_arc_percent(g_brightness_percent, g_speed_percent);
+}
+
+
+
 /* ============================================================
  *      COMPACT ARCS UPDATE
  * ============================================================*/
@@ -1188,6 +1326,8 @@ static void update_compact_arcs_from_percent(void)
 
     lv_arc_set_angles(brightness_arc, b_start, b_angle);
     lv_arc_set_angles(speed_arc,      s_start, s_angle);
+    ui_dev_honeycomb_set_arc_percent(g_brightness_percent, g_speed_percent);
+
 }
 
 /* ============================================================
@@ -1668,12 +1808,32 @@ void app_main(void)
     screen_diag      = ui_create_diag_screen();
     
     ui_dev_honeycomb_cfg_t hc_cfg = {
-    .swipe_cb    = screen_touch_event_cb,
-    .title_font  = J_FONT_DIAG_TITLE,
-    .bg_color    = lv_color_hex(0x0A0A0A),
-    .text_color  = J_COLOR_TEXT_MAIN,
-    .title_text  = "HoneyComb\n(stub)",
+    .swipe_cb           = screen_touch_event_cb,
+    .center_cb          = honeycomb_center_event_cb,
+    .bottom_cb          = honeycomb_bottom_dev_container_event_cb,
+    .brightness_idle_cb = brightness_idle_event_cb,
+    .speed_idle_cb      = speed_idle_event_cb,
+
+    .font_name          = J_FONT_DEVICE_NAME,
+    .font_mode          = J_FONT_DEVICE_NAME,
+    .font_bottom        = J_FONT_BODY,
+    .font_hint          = &lv_font_montserrat_24,
+
+    .bg_color           = J_COLOR_BG_MAIN,
+    .text_color         = J_COLOR_TEXT_MAIN,
+    .panel_bg_color     = J_COLOR_PANEL_BG,
+    .panel_border_color = J_COLOR_PANEL_BORDER,
+    .speed_arc_color    = J_COLOR_SPEED_ARC,
+
+    .title_text         = "Ambient",
+
+    .bright_start       = BRIGHTNESS_ARC_START,
+    .bright_end         = BRIGHTNESS_ARC_END,
+    .speed_start        = SPEED_ARC_START,
+    .speed_end          = SPEED_ARC_END,
 };
+
+
 
 screen_honeycomb = ui_dev_honeycomb_create(&hc_cfg);
 
@@ -1692,6 +1852,8 @@ screen_honeycomb = ui_dev_honeycomb_create(&hc_cfg);
 
     /* Bind screens into device registry */
     ui_devices_init_registry();
+    ui_refresh_all_screens();
+
 
     /* Load initial screen */
     if (screen_device) {
