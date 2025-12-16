@@ -158,6 +158,32 @@ static device_state_t g_current_device = {
     .energy_price_eur_per_kwh = 0.30f
 };
 
+// ===== BEGIN PATCH: per-device state for HoneyComb =====
+static device_state_t g_honey_device = {
+    .name               = "HoneyComb",
+    .mode               = "Ambient",
+    .is_on              = true,
+    .is_online          = true,
+
+    .room_temp          = 22.5f,
+    .room_humidity      = 45.0f,
+
+    .device_temp        = 37.0f,
+    .device_temp_max_today = 45.0f,
+    .device_temp_max_ever  = 60.0f,
+
+    .power_w            = 36.0f,
+    .power_w_max        = 72.0f,
+
+    .energy_kwh         = 0.42f,
+    .psu_max_w          = 60.0f,
+    .lamp_theoretical_w = 90.0f,
+
+    .energy_price_eur_per_kwh = 0.30f
+};
+// ===== END PATCH =====
+
+
 /* ============================================================
  *        ROOM VIEW MODES (TOP WINDOW)
  * ============================================================*/
@@ -362,6 +388,18 @@ static inline j_dev_ctx_t *j_active_dev(void)
     return &g_devs[g_active_dev_idx];
 }
 
+// ===== BEGIN PATCH: find device ctx by root =====
+static j_dev_ctx_t *j_dev_find_by_root(lv_obj_t *root)
+{
+    if (!root) return NULL;
+    for (int i = 0; i < g_dev_count; i++) {
+        if (g_devs[i].root == root) return &g_devs[i];
+    }
+    return NULL;
+}
+// ===== END PATCH =====
+
+
 /* Marked unused for now to keep build clean */
 static __attribute__((unused)) void j_dev_set_active_idx(int idx)
 {
@@ -482,11 +520,15 @@ static void ui_anim_set_overlay(bool open)
     ui_active_dev_set_overlay(open);
 }
 
+// ===== BEGIN PATCH: set mode into active device state =====
 static void ui_anim_set_mode(const char *mode_str)
 {
-    /* Your state model stores mode as const char* */
-    g_current_device.mode = mode_str;
+    j_dev_ctx_t *d = ui_active_dev_ctx();
+    if (d && d->st) d->st->mode = mode_str;
+    else           g_current_device.mode = mode_str;
 }
+// ===== END PATCH =====
+
 
 static void ui_anim_request_refresh(void)
 {
@@ -635,12 +677,17 @@ static void center_event_cb(lv_event_t *e)
             LV_LOG_USER("Center single click: open mode menu (not implemented yet)");
         }
     }
-    else if (code == LV_EVENT_LONG_PRESSED) {
-        g_current_device.is_on = !g_current_device.is_on;
-        LV_LOG_USER("Center long press: toggle power -> %d", g_current_device.is_on);
-        ui_refresh_all_screens();
+    // ===== BEGIN PATCH: toggle active device power =====
+else if (code == LV_EVENT_LONG_PRESSED) {
+    j_dev_ctx_t *d = ui_active_dev_ctx();
+    device_state_t *st = (d && d->st) ? d->st : &g_current_device;
 
-    }
+    st->is_on = !st->is_on;
+    LV_LOG_USER("Center long press: toggle power -> %d", st->is_on);
+    ui_refresh_all_screens();
+}
+// ===== END PATCH =====
+
 }
 
 static void honeycomb_center_event_cb(lv_event_t *e)
@@ -661,11 +708,17 @@ static void honeycomb_center_event_cb(lv_event_t *e)
             LV_LOG_USER("HoneyComb center single click: (not implemented yet)");
         }
     }
-    else if (code == LV_EVENT_LONG_PRESSED) {
-        g_current_device.is_on = !g_current_device.is_on;
-        LV_LOG_USER("HoneyComb center long press: toggle power -> %d", g_current_device.is_on);
-        ui_refresh_all_screens();
-    }
+    // ===== BEGIN PATCH: toggle active device power (HoneyComb) =====
+        else if (code == LV_EVENT_LONG_PRESSED) {
+            j_dev_ctx_t *d = ui_active_dev_ctx();
+            device_state_t *st = (d && d->st) ? d->st : &g_current_device;
+
+            st->is_on = !st->is_on;
+            LV_LOG_USER("HoneyComb center long press: toggle power -> %d", st->is_on);
+            ui_refresh_all_screens();
+}
+// ===== END PATCH =====
+
 }
 
 static void honeycomb_bottom_dev_container_event_cb(lv_event_t *e)
@@ -1156,7 +1209,12 @@ static lv_obj_t *ui_create_device_screen(void)
 
 static void device_screen_update_from_state(void)
 {
+    // ===== BEGIN PATCH: screen-specific state via registry =====
     const device_state_t *st = &g_current_device;
+    j_dev_ctx_t *d = j_dev_find_by_root(screen_device);
+    if (d && d->st) st = d->st;
+// ===== END PATCH =====
+
 
     lv_label_set_text(label_name, st->name);
     lv_label_set_text(label_mode, st->mode);
@@ -1239,7 +1297,12 @@ static void device_screen_update_from_state(void)
 
 static void honeycomb_screen_update_from_state(void)
 {
+    // ===== BEGIN PATCH: screen-specific state via registry =====
     const device_state_t *st = &g_current_device;
+    j_dev_ctx_t *d = j_dev_find_by_root(screen_honeycomb);
+    if (d && d->st) st = d->st;
+// ===== END PATCH =====
+
 
     /* Same logic as Lamp for colors */
     lv_color_t mode_color = st->is_on
@@ -1733,7 +1796,7 @@ static void ui_devices_init_registry(void)
     g_dev_count = 2;
 
     if (screen_honeycomb) {
-        int idx = j_dev_insert_before_diag(screen_honeycomb, &g_current_device);
+        int idx = j_dev_insert_before_diag(screen_honeycomb, &g_honey_device);
         ESP_LOGI("UI", "HoneyComb inserted at idx=%d (Diag stays last idx=%d)", idx, g_dev_count - 1);
     } else {
         LV_LOG_ERROR("Failed to create HoneyComb screen");
@@ -1836,6 +1899,11 @@ void app_main(void)
 
 
 screen_honeycomb = ui_dev_honeycomb_create(&hc_cfg);
+if (screen_honeycomb) {
+    ui_dev_honeycomb_set_center_text("HC OK", "after create");
+    ui_dev_honeycomb_set_bottom_text("L OK", "R OK");
+}
+
 
 
         /* Bind animation overlay module to current app context */
