@@ -36,6 +36,7 @@ idf_component_register(
         "."
      REQUIRES
           ui_core
+          ui_overlays
           esp_lcd
           unity
           fatfs
@@ -44,5 +45,6 @@ idf_component_register(
           spi_flash
           nvs_flash
           bt
+          
 )
 
