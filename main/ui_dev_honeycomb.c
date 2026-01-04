@@ -3,6 +3,14 @@
 #include "Remote_Fonts.h"
 #include "Remote_UI_Layout.h"
 #include "j_ui_utils.h"
+#include "esp_log.h"
+
+
+
+
+
+static const char *TAG_HC = "HC";
+
 
 /* Single-instance UI handles (OK for now: one HoneyComb device) */
 static lv_obj_t *s_scr                = NULL;
@@ -42,6 +50,12 @@ static inline void clamp_percent(int16_t *p)
 lv_obj_t *ui_dev_honeycomb_create(const ui_dev_honeycomb_cfg_t *cfg)
 {
     lv_disp_t *disp = lv_disp_get_default();
+
+    ESP_LOGI(TAG_HC, "create: file=%s cfg=%p title_text=%s",
+             __FILE__,
+             (void*)cfg,
+             (cfg && cfg->title_text) ? cfg->title_text : "(null)");
+
     if (!disp) {
         LV_LOG_ERROR("ui_dev_honeycomb_create: no default display");
         return NULL;
@@ -50,6 +64,9 @@ lv_obj_t *ui_dev_honeycomb_create(const ui_dev_honeycomb_cfg_t *cfg)
     const lv_coord_t w = lv_disp_get_hor_res(disp);
     const lv_coord_t h = lv_disp_get_ver_res(disp);
     const lv_coord_t screen_size = (w < h) ? w : h;
+
+    /* дальше оставь твой текущий код как был */
+
 
     /* Create screen root */
     s_scr = lv_obj_create(NULL);
@@ -113,6 +130,16 @@ lv_obj_t *ui_dev_honeycomb_create(const ui_dev_honeycomb_cfg_t *cfg)
     lv_obj_move_background(s_speed_arc);
     lv_obj_clear_flag(s_speed_arc, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_clear_flag(s_speed_arc, LV_OBJ_FLAG_SCROLLABLE);
+        /* Make indicators visible even before first update call */
+    if (s_brightness_arc) {
+        const int16_t a = s_bright_start + (s_bright_end - s_bright_start) * 30 / 100;
+        lv_arc_set_angles(s_brightness_arc, s_bright_start, a);
+    }
+    if (s_speed_arc) {
+        const int16_t a = s_speed_start + (s_speed_end - s_speed_start) * 20 / 100;
+        lv_arc_set_angles(s_speed_arc, s_speed_start, a);
+    }
+
 
     /* Center panel */
     const lv_color_t panel_bg     = (cfg) ? cfg->panel_bg_color     : lv_color_hex(0x101010);
@@ -141,13 +168,17 @@ lv_obj_t *ui_dev_honeycomb_create(const ui_dev_honeycomb_cfg_t *cfg)
     lv_label_set_text(s_label_name, "HoneyComb");
     if (cfg && cfg->font_name) lv_obj_set_style_text_font(s_label_name, cfg->font_name, 0);
     lv_obj_set_style_text_color(s_label_name, text, 0);
+    lv_obj_set_style_text_align(s_label_name, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_align(s_label_name, LV_ALIGN_TOP_MID, 0, 0);
+
 
     s_label_mode = lv_label_create(s_center_container);
     lv_label_set_text(s_label_mode, (cfg && cfg->title_text) ? cfg->title_text : "stub");
     if (cfg && cfg->font_mode) lv_obj_set_style_text_font(s_label_mode, cfg->font_mode, 0);
+    lv_obj_set_style_text_color(s_label_mode, text, 0);
     lv_obj_set_style_text_align(s_label_mode, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_align(s_label_mode, LV_ALIGN_BOTTOM_MID, 0, -4);
+
 
     /* Bottom panel (no top room panel by design) */
     s_bottom_container = lv_obj_create(s_scr);
@@ -172,10 +203,16 @@ lv_obj_t *ui_dev_honeycomb_create(const ui_dev_honeycomb_cfg_t *cfg)
 
     s_label_temp = lv_label_create(s_bottom_container);
     if (cfg && cfg->font_bottom) lv_obj_set_style_text_font(s_label_temp, cfg->font_bottom, 0);
+    lv_obj_set_style_text_color(s_label_temp, text, 0);
+    lv_obj_set_style_text_align(s_label_temp, LV_TEXT_ALIGN_LEFT, 0);
+    lv_label_set_text(s_label_temp, "Dev: --.-°C");
     lv_obj_align(s_label_temp, LV_ALIGN_LEFT_MID, 4, 0);
 
     s_label_power = lv_label_create(s_bottom_container);
     if (cfg && cfg->font_bottom) lv_obj_set_style_text_font(s_label_power, cfg->font_bottom, 0);
+    lv_obj_set_style_text_color(s_label_power, text, 0);
+    lv_obj_set_style_text_align(s_label_power, LV_TEXT_ALIGN_RIGHT, 0);
+    lv_label_set_text(s_label_power, "--.- W");
     lv_obj_align(s_label_power, LV_ALIGN_RIGHT_MID, -4, 0);
 
     /* Touch areas for arc overlays (reuse existing callbacks) */
@@ -220,7 +257,6 @@ lv_obj_t *ui_dev_honeycomb_create(const ui_dev_honeycomb_cfg_t *cfg)
 
     return s_scr;
 }
-
 void ui_dev_honeycomb_set_center_text(const char *name, const char *mode)
 {
     if (s_label_name && name) lv_label_set_text(s_label_name, name);

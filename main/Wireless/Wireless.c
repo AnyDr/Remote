@@ -1,4 +1,11 @@
 #include "Wireless.h"
+#include "j_espnow_link.h"
+
+
+
+
+#define J_WIRELESS_SCAN_ENABLE 0
+
 
 uint16_t BLE_NUM = 0;
 uint16_t WIFI_NUM = 0;
@@ -43,10 +50,30 @@ void WIFI_Init(void *arg)
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();                 
     esp_wifi_init(&cfg);                                      
     esp_wifi_set_mode(WIFI_MODE_STA);              
-    esp_wifi_start();                            
+    esp_wifi_start();
+    // Для ESPNOW-only режима фиксируем канал (пока без подключения к AP)
+    esp_wifi_set_channel((uint8_t)CONFIG_J_WIFI_FALLBACK_CH, WIFI_SECOND_CHAN_NONE);
 
-    WIFI_NUM = WIFI_Scan();
-    printf("WIFI:%d\r\n",WIFI_NUM);
+    // ESPNOW поверх уже поднятого STA
+    j_espnow_link_start();
+
+    uint8_t mac[6] = {0};
+    if (esp_wifi_get_mac(WIFI_IF_STA, mac) == ESP_OK) {
+        printf("WIFI STA MAC: %02X:%02X:%02X:%02X:%02X:%02X\r\n",
+               mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    } else {
+        printf("esp_wifi_get_mac failed\r\n");
+    }
+                            
+
+    #if J_WIRELESS_SCAN_ENABLE
+    #if 0
+        WIFI_NUM = WIFI_Scan();
+        printf("WIFI:%d\r\n",WIFI_NUM);
+    #endif
+
+    #endif
+
     
     vTaskDelete(NULL);
 }

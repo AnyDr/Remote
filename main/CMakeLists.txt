@@ -18,6 +18,10 @@ idf_component_register(
         "./BAT_Driver/BAT_Driver.c"
         "./PWR_Key/PWR_Key.c"
         "./Wireless/Wireless.c"
+        "./Wireless/j_espnow_link.c"
+
+
+
     INCLUDE_DIRS
         "./Audio_Driver"
         "./MIC_Driver"

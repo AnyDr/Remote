@@ -26,6 +26,8 @@
 #include "j_ui_utils.h"
 #include "ui_anim_overlay.h"
 #include "ui_dev_honeycomb.h"
+#include "j_espnow_link.h"
+
 
 
 
@@ -702,7 +704,11 @@ static void center_event_cb(lv_event_t *e)
             ui_anim_overlay_open();
         } else {
             g_center_last_click_ms = now;
-            LV_LOG_USER("Center single click: open mode menu (not implemented yet)");
+            static bool s_paused = false;
+            s_paused = !s_paused;
+            LV_LOG_USER("Center single click: toggle pause -> %d", s_paused);
+            j_esn_send_pause(s_paused);
+
         }
     }
     // ===== BEGIN PATCH: toggle active device power =====
@@ -711,6 +717,8 @@ else if (code == LV_EVENT_LONG_PRESSED) {
     device_state_t *st = (d && d->st) ? d->st : &g_current_device;
 
     st->is_on = !st->is_on;
+    j_esn_send_power(st->is_on);
+
     LV_LOG_USER("Center long press: toggle power -> %d", st->is_on);
     ui_refresh_all_screens();
 }
@@ -733,7 +741,11 @@ static void honeycomb_center_event_cb(lv_event_t *e)
             ui_anim_overlay_open();
         } else {
             g_honey_center_last_click_ms = now;
-            LV_LOG_USER("HoneyComb center single click: (not implemented yet)");
+            static bool s_paused = false;
+            s_paused = !s_paused;
+            LV_LOG_USER("Center single click: toggle pause -> %d", s_paused);
+            j_esn_send_pause(s_paused);
+
         }
     }
     // ===== BEGIN PATCH: toggle active device power (HoneyComb) =====
@@ -742,6 +754,7 @@ static void honeycomb_center_event_cb(lv_event_t *e)
             device_state_t *st = (d && d->st) ? d->st : &g_current_device;
 
             st->is_on = !st->is_on;
+            j_esn_send_power(st->is_on);
             LV_LOG_USER("HoneyComb center long press: toggle power -> %d", st->is_on);
             ui_refresh_all_screens();
 }
@@ -948,15 +961,21 @@ static void brightness_overlay_arc_event_cb(lv_event_t *e)
     if (code == LV_EVENT_VALUE_CHANGED) {
         lv_obj_t *arc = lv_event_get_target(e);
         int16_t v = lv_arc_get_value(arc);
-                // ===== BEGIN PATCH: per-device brightness percent =====
+
+        // ===== BEGIN PATCH: per-device brightness percent =====
         j_dev_ctx_t *d = ui_active_dev_ctx();
         if (d) d->brightness_percent = v;
         LV_LOG_USER("Brightness overlay value = %d%%", v);
         update_compact_arcs_from_percent();
         // ===== END PATCH =====
 
+        // v = 0..100 (%). Переводим в 0..255 для лампы.
+        uint16_t b = (uint16_t)((v * 255) / 100);
+        if (b > 255) b = 255;
+        j_esn_send_brightness_u8((uint8_t)b);
     }
 }
+
 
 static void speed_overlay_arc_event_cb(lv_event_t *e)
 {
@@ -964,15 +983,22 @@ static void speed_overlay_arc_event_cb(lv_event_t *e)
     if (code == LV_EVENT_VALUE_CHANGED) {
         lv_obj_t *arc = lv_event_get_target(e);
         int16_t v = lv_arc_get_value(arc);
-                // ===== BEGIN PATCH: per-device speed percent =====
+
+        // ===== BEGIN PATCH: per-device speed percent =====
         j_dev_ctx_t *d = ui_active_dev_ctx();
         if (d) d->speed_percent = v;
         LV_LOG_USER("Speed overlay value = %d%%", v);
         update_compact_arcs_from_percent();
         // ===== END PATCH =====
 
+        // v = 0..100 (%). Маппинг в 10..300 (%)
+        uint16_t sp = 10 + (uint16_t)((v * (300 - 10)) / 100);
+        if (sp < 10) sp = 10;
+        if (sp > 300) sp = 300;
+        j_esn_send_speed_pct(sp);
     }
 }
+
 
 static void room_container_event_cb(lv_event_t *e)
 {
