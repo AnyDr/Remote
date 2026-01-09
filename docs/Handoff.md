@@ -48,3 +48,8 @@ UI/UX (инварианты):
 - актуальные `main/*.c` (где живёт UI/gestures)
 - файлы ESPNOW протокола/линка (`j_espnow_*`, `Wireless.c`)
 - актуальные `docs/*` и `tech_debt.md`
+
+
+
+
+
