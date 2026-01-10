@@ -4,6 +4,10 @@
 #include <math.h>   // sqrtf, atan2f, fabsf
 #include <string.h> // strcmp
 #include <stdlib.h> // abs
+#include "nvs.h"
+#include "nvs_flash.h"
+#include "esp_err.h"
+
 
 
 #include "freertos/FreeRTOS.h"
@@ -68,6 +72,42 @@ __attribute__((weak)) uint16_t j_esn_fx_cache_id_by_index(uint16_t index)
     return index;
 }
 
+#define UI_NVS_NS          "ui"
+#define UI_NVS_KEY_LAST_FX "last_fx_id"
+
+static uint16_t s_ui_last_fx_id = 0xFFFF;
+
+static void ui_last_fx_load(void)
+{
+    nvs_handle_t h;
+    esp_err_t err = nvs_open(UI_NVS_NS, NVS_READONLY, &h);
+    if (err != ESP_OK) return;
+
+    uint16_t v = 0xFFFF;
+    err = nvs_get_u16(h, UI_NVS_KEY_LAST_FX, &v);
+    nvs_close(h);
+
+    if (err == ESP_OK) s_ui_last_fx_id = v;
+}
+
+static void ui_last_fx_save(uint16_t id)
+{
+    nvs_handle_t h;
+    esp_err_t err = nvs_open(UI_NVS_NS, NVS_READWRITE, &h);
+    if (err != ESP_OK) return;
+
+    (void)nvs_set_u16(h, UI_NVS_KEY_LAST_FX, id);
+    (void)nvs_commit(h);
+    nvs_close(h);
+}
+
+static uint16_t ui_fx_get_selected_id(void *arg)
+{
+    (void)arg;
+    return s_ui_last_fx_id;
+}
+
+
 static uint16_t ui_fx_get_count(void *arg)
 {
     (void)arg;
@@ -91,6 +131,9 @@ static void ui_fx_on_select(void *arg, uint16_t effect_id)
     (void)arg;
     /* send to Lamp via ESPNOW */
     j_esn_send_anim_id(effect_id);
+    s_ui_last_fx_id = effect_id;
+    ui_last_fx_save(effect_id);
+
 }
 
 
@@ -129,12 +172,12 @@ static void ui_fx_on_select(void *arg, uint16_t effect_id)
 #define J_BATT_CONT_H          26
 
 /* Animation selector offset from screen center */
-#define J_ANIM_POS_X    0     /* (-) left, (+) right */
+#define J_ANIM_POS_X    -5     /* (-) left, (+) right */
 #define J_ANIM_POS_Y    0     /* (-) up,   (+) down */
 
 #define J_DOUBLE_TAP_MS        350
-#define J_PAUSE_HOLD_MS        700
-#define J_POWER_HOLD_MS        5000
+#define J_PAUSE_HOLD_MS        500
+#define J_POWER_HOLD_MS        2000
 
 
 /* ============================================================
@@ -2215,6 +2258,17 @@ void app_main(void)
 {
     Driver_Init();
 
+    /* NVS нужен для запоминания последней выбранной анимации */
+    esp_err_t nvs_err = nvs_flash_init();
+    if (nvs_err == ESP_ERR_NVS_NO_FREE_PAGES || nvs_err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        nvs_err = nvs_flash_init();
+    }
+    ESP_ERROR_CHECK(nvs_err);
+
+    ui_last_fx_load();
+
+
     SD_Init();
     LCD_Init();
     Audio_Init();
@@ -2279,6 +2333,7 @@ if (screen_honeycomb) {
         .fx_get_count    = ui_fx_get_count,
         .fx_get_name     = ui_fx_get_name,
         .fx_get_id       = ui_fx_get_id,
+        .fx_get_selected_id = ui_fx_get_selected_id,
         .fx_on_select    = ui_fx_on_select,
     };
 

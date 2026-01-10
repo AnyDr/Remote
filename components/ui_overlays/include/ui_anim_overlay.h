@@ -33,6 +33,8 @@ typedef struct {
     uint16_t (*fx_get_count)(void *arg);
     const char *(*fx_get_name)(void *arg, uint16_t index);
     uint16_t (*fx_get_id)(void *arg, uint16_t index);
+    uint16_t (*fx_get_selected_id)(void *arg);
+
 
     /* Called when user confirms selection: pass EFFECT_ID (not index) */
     void (*fx_on_select)(void *arg, uint16_t effect_id);
