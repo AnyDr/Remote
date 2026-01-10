@@ -3,7 +3,7 @@
 ## 1 Сборка (ESP-IDF)
 Обычный цикл:
 
-idf.py set-target esp32s3
+cd "D:\esp\ESP32-S3-Touch-LCD-Remote"
 idf.py build
 
 Полная очистка:
@@ -11,25 +11,22 @@ idf.py fullclean
 idf.py build
 
 Прошивка:
-idf.py -p COMx flash
-idf.py -p COMx monitor
+idf.py -p COM11 flash
+idf.py -p COM11 monitor
 
 Меню конфигурации:
-idf.py menuconfig
-
-Монитор:
-idf.py monitor
+idf.py -p COM11 menuconfig
 
 ## 2 Git checkpoint (практика сессий)
 Рекомендуемый порядок в конце сессии:
+
 git status
 git add -A
-git commit -m "ui: <коротко что сделали>"
-git push
+git commit -m "ui: On\Off ligic fixed"
+git push origin stable/work
+git tag -a backup/<on\off> -m "<msg>"
+git push origin backup/<name>
 
-Тег для бэкапа:
-git tag -a <tag_name> -m "<tag message>"
-git push origin <tag_name>
 
 ## 3 GitHub file size limit (remote_src.tgz)
 `remote_src.tgz` не стоит коммитить:

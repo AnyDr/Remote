@@ -5,6 +5,7 @@ $dst  = "C:\Users\necha\Desktop\Remote\Test"         # куда сохранит
 # Смешивай как хочешь: папки, маски, отдельные файлы (все пути ОТНОСИТЕЛЬНО $root)
 $pick = @(
   "\CMakeLists.txt",
+  "\sdkconfig",
   "docs\*.md",
   "main",
   "main\Wireless",
