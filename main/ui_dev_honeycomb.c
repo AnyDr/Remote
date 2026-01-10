@@ -160,9 +160,15 @@ lv_obj_t *ui_dev_honeycomb_create(const ui_dev_honeycomb_cfg_t *cfg)
     lv_obj_add_flag(s_center_container, LV_OBJ_FLAG_EVENT_BUBBLE);
 
     if (cfg && cfg->center_cb) {
+        lv_obj_add_event_cb(s_center_container, cfg->center_cb, LV_EVENT_PRESSED, NULL);
+        lv_obj_add_event_cb(s_center_container, cfg->center_cb, LV_EVENT_PRESSING, NULL);
+        lv_obj_add_event_cb(s_center_container, cfg->center_cb, LV_EVENT_RELEASED, NULL);
+        lv_obj_add_event_cb(s_center_container, cfg->center_cb, LV_EVENT_PRESS_LOST, NULL);
+
         lv_obj_add_event_cb(s_center_container, cfg->center_cb, LV_EVENT_CLICKED, NULL);
         lv_obj_add_event_cb(s_center_container, cfg->center_cb, LV_EVENT_LONG_PRESSED, NULL);
     }
+
 
     s_label_name = lv_label_create(s_center_container);
     lv_label_set_text(s_label_name, "HoneyComb");

@@ -177,7 +177,21 @@ static void ui_fx_on_select(void *arg, uint16_t effect_id)
 
 #define J_DOUBLE_TAP_MS        350
 #define J_PAUSE_HOLD_MS        500
+
+/* Базовый тайминг удержания для POWER (если не задано раздельно) */
 #define J_POWER_HOLD_MS        2000
+
+/* Раздельные тайминги: удержание для включения и удержание для выключения.
+ * Если хочешь разные времена - просто поменяй эти define.
+ */
+#ifndef J_POWER_ON_HOLD_MS
+#define J_POWER_ON_HOLD_MS     J_POWER_HOLD_MS
+#endif
+
+#ifndef J_POWER_OFF_HOLD_MS
+#define J_POWER_OFF_HOLD_MS    J_POWER_HOLD_MS
+#endif
+
 
 
 /* ============================================================
@@ -424,6 +438,10 @@ static uint32_t g_honey_press_start_ms  = 0;
 
 static bool g_center_suppress_click = false;
 static bool g_honey_suppress_click  = false;
+
+static bool g_center_power_fired = false;
+static bool g_honey_power_fired  = false;
+
 
 /* Локальное состояние паузы на пульте (toggle как раньше) */
 static bool g_ui_paused = false;
@@ -840,15 +858,16 @@ static void center_event_cb(lv_event_t *e)
 
     /* Фильтр по радиусу для всех событий центра */
     if ((code == LV_EVENT_PRESSED) ||
+        (code == LV_EVENT_PRESSING) ||
         (code == LV_EVENT_RELEASED) ||
         (code == LV_EVENT_PRESS_LOST) ||
         (code == LV_EVENT_CLICKED)) {
 
         if (!ui_is_center_tap_radius_px(r_px)) {
-            /* не копим double-tap и не считаем удержание */
-            g_center_last_click_ms = 0;
-            g_center_press_start_ms = 0;
-            g_center_suppress_click = false;
+            g_center_last_click_ms   = 0;
+            g_center_press_start_ms  = 0;
+            g_center_suppress_click  = false;
+            g_center_power_fired     = false;
             return;
         }
     }
@@ -856,13 +875,35 @@ static void center_event_cb(lv_event_t *e)
     if (code == LV_EVENT_PRESSED) {
         g_center_press_start_ms = lv_tick_get();
         g_center_suppress_click = false;
+        g_center_power_fired    = false;
         return;
     }
 
-    if (code == LV_EVENT_PRESS_LOST) {
-        g_center_press_start_ms = 0;
-        g_center_suppress_click = false;
-        g_center_last_click_ms = 0;
+    /* POWER: срабатывает во время удержания (PRESSING), а не по отпусканию */
+    if (code == LV_EVENT_PRESSING) {
+        if (g_center_press_start_ms == 0) return;
+        if (g_center_power_fired) return;
+
+        uint32_t held_ms = lv_tick_elaps(g_center_press_start_ms);
+
+        j_dev_ctx_t *d = ui_active_dev_ctx();
+        device_state_t *st = (d && d->st) ? d->st : &g_current_device;
+
+        uint32_t th_ms = st->is_on ? J_POWER_OFF_HOLD_MS : J_POWER_ON_HOLD_MS;
+
+        if (held_ms >= th_ms) {
+            st->is_on = !st->is_on;
+            (void)j_esn_send_power(st->is_on);
+
+            LV_LOG_USER("Center hold %u ms (PRESSING): toggle power -> %d",
+                        (unsigned)held_ms, st->is_on);
+
+            ui_refresh_all_screens();
+
+            g_center_power_fired    = true;
+            g_center_last_click_ms  = 0;
+            g_center_suppress_click = true;
+        }
         return;
     }
 
@@ -872,34 +913,37 @@ static void center_event_cb(lv_event_t *e)
         uint32_t held_ms = lv_tick_elaps(g_center_press_start_ms);
         g_center_press_start_ms = 0;
 
-        if (held_ms >= J_POWER_HOLD_MS) {
-            j_dev_ctx_t *d = ui_active_dev_ctx();
-            device_state_t *st = (d && d->st) ? d->st : &g_current_device;
-
-            st->is_on = !st->is_on;
-            j_esn_send_power(st->is_on);
-
-            LV_LOG_USER("Center hold %u ms: toggle power -> %d", (unsigned)held_ms, st->is_on);
-            ui_refresh_all_screens();
-
-            /* чтобы после удержания не сработал CLICKED/double tap */
-            g_center_last_click_ms = 0;
+        /* Если power уже сработал во время удержания, отпускание ничего не делает */
+        if (g_center_power_fired) {
+            g_center_power_fired    = false;
+            g_center_last_click_ms  = 0;
             g_center_suppress_click = true;
             return;
         }
 
+        /* PAUSE: остаётся “по отпусканию” */
         if (held_ms >= J_PAUSE_HOLD_MS) {
             g_ui_paused = !g_ui_paused;
-            j_esn_send_pause(g_ui_paused);
+            (void)j_esn_send_pause(g_ui_paused);
 
-            LV_LOG_USER("Center hold %u ms: toggle pause -> %d", (unsigned)held_ms, g_ui_paused);
+            LV_LOG_USER("Center hold %u ms (RELEASED): toggle pause -> %d",
+                        (unsigned)held_ms, g_ui_paused);
 
-            g_center_last_click_ms = 0;
+            ui_refresh_all_screens();
+
+            g_center_last_click_ms  = 0;
             g_center_suppress_click = true;
             return;
         }
 
-        /* короткое удержание: ничего, CLICKED обработает double tap */
+        return;
+    }
+
+    if (code == LV_EVENT_PRESS_LOST) {
+        g_center_press_start_ms  = 0;
+        g_center_suppress_click  = false;
+        g_center_last_click_ms   = 0;
+        g_center_power_fired     = false;
         return;
     }
 
@@ -919,7 +963,7 @@ static void center_event_cb(lv_event_t *e)
             ui_anim_overlay_open();
         } else {
             g_center_last_click_ms = now;
-            /* одиночный короткий тап теперь ничего не делает */
+            /* одиночный короткий тап ничего не делает */
         }
         return;
     }
@@ -933,29 +977,54 @@ static void honeycomb_center_event_cb(lv_event_t *e)
 
     const lv_coord_t r_px = (lv_coord_t)((g_screen_size * 27) / 100);
 
+    /* Фильтр по радиусу для всех событий центра */
     if ((code == LV_EVENT_PRESSED) ||
+        (code == LV_EVENT_PRESSING) ||
         (code == LV_EVENT_RELEASED) ||
         (code == LV_EVENT_PRESS_LOST) ||
         (code == LV_EVENT_CLICKED)) {
 
         if (!ui_is_center_tap_radius_px(r_px)) {
             g_honey_center_last_click_ms = 0;
-            g_honey_press_start_ms = 0;
-            g_honey_suppress_click = false;
+            g_honey_press_start_ms       = 0;
+            g_honey_suppress_click       = false;
+            g_honey_power_fired          = false;
             return;
         }
     }
 
     if (code == LV_EVENT_PRESSED) {
-        g_honey_press_start_ms = lv_tick_get();
-        g_honey_suppress_click = false;
+        g_honey_press_start_ms  = lv_tick_get();
+        g_honey_suppress_click  = false;
+        g_honey_power_fired     = false;
         return;
     }
 
-    if (code == LV_EVENT_PRESS_LOST) {
-        g_honey_press_start_ms = 0;
-        g_honey_suppress_click = false;
-        g_honey_center_last_click_ms = 0;
+    /* POWER: срабатывает во время удержания (PRESSING), а не по отпусканию */
+    if (code == LV_EVENT_PRESSING) {
+        if (g_honey_press_start_ms == 0) return;
+        if (g_honey_power_fired) return;
+
+        uint32_t held_ms = lv_tick_elaps(g_honey_press_start_ms);
+
+        j_dev_ctx_t *d = ui_active_dev_ctx();
+        device_state_t *st = (d && d->st) ? d->st : &g_current_device;
+
+        uint32_t th_ms = st->is_on ? J_POWER_OFF_HOLD_MS : J_POWER_ON_HOLD_MS;
+
+        if (held_ms >= th_ms) {
+            st->is_on = !st->is_on;
+            (void)j_esn_send_power(st->is_on);
+
+            LV_LOG_USER("HoneyComb center hold %u ms (PRESSING): toggle power -> %d",
+                        (unsigned)held_ms, st->is_on);
+
+            ui_refresh_all_screens();
+
+            g_honey_power_fired          = true;
+            g_honey_center_last_click_ms = 0;
+            g_honey_suppress_click       = true;
+        }
         return;
     }
 
@@ -965,32 +1034,37 @@ static void honeycomb_center_event_cb(lv_event_t *e)
         uint32_t held_ms = lv_tick_elaps(g_honey_press_start_ms);
         g_honey_press_start_ms = 0;
 
-        if (held_ms >= J_POWER_HOLD_MS) {
-            j_dev_ctx_t *d = ui_active_dev_ctx();
-            device_state_t *st = (d && d->st) ? d->st : &g_current_device;
+        /* Если power уже сработал во время удержания, отпускание ничего не делает */
+        if (g_honey_power_fired) {
+            g_honey_power_fired          = false;
+            g_honey_center_last_click_ms = 0;
+            g_honey_suppress_click       = true;
+            return;
+        }
 
-            st->is_on = !st->is_on;
-            j_esn_send_power(st->is_on);
+        /* PAUSE: остаётся “по отпусканию” */
+        if (held_ms >= J_PAUSE_HOLD_MS) {
+            g_ui_paused = !g_ui_paused;
+            (void)j_esn_send_pause(g_ui_paused);
 
-            LV_LOG_USER("HoneyComb hold %u ms: toggle power -> %d", (unsigned)held_ms, st->is_on);
+            LV_LOG_USER("HoneyComb center hold %u ms (RELEASED): toggle pause -> %d",
+                        (unsigned)held_ms, g_ui_paused);
+
             ui_refresh_all_screens();
 
             g_honey_center_last_click_ms = 0;
-            g_honey_suppress_click = true;
+            g_honey_suppress_click       = true;
             return;
         }
 
-        if (held_ms >= J_PAUSE_HOLD_MS) {
-            g_ui_paused = !g_ui_paused;
-            j_esn_send_pause(g_ui_paused);
+        return;
+    }
 
-            LV_LOG_USER("HoneyComb hold %u ms: toggle pause -> %d", (unsigned)held_ms, g_ui_paused);
-
-            g_honey_center_last_click_ms = 0;
-            g_honey_suppress_click = true;
-            return;
-        }
-
+    if (code == LV_EVENT_PRESS_LOST) {
+        g_honey_press_start_ms       = 0;
+        g_honey_suppress_click       = false;
+        g_honey_center_last_click_ms = 0;
+        g_honey_power_fired          = false;
         return;
     }
 
@@ -1014,7 +1088,6 @@ static void honeycomb_center_event_cb(lv_event_t *e)
         return;
     }
 }
-
 
 
 static void honeycomb_bottom_dev_container_event_cb(lv_event_t *e)
@@ -1419,6 +1492,7 @@ static lv_obj_t *ui_create_device_screen(void)
     lv_obj_clear_flag(center_container, LV_OBJ_FLAG_SCROLLABLE);
 
     lv_obj_add_event_cb(center_container, center_event_cb, LV_EVENT_PRESSED, NULL);
+    lv_obj_add_event_cb(center_container, center_event_cb, LV_EVENT_PRESSING, NULL);
     lv_obj_add_event_cb(center_container, center_event_cb, LV_EVENT_RELEASED, NULL);
     lv_obj_add_event_cb(center_container, center_event_cb, LV_EVENT_PRESS_LOST, NULL);
     lv_obj_add_event_cb(center_container, center_event_cb, LV_EVENT_CLICKED, NULL);
