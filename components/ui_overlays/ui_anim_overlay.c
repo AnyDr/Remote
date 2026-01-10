@@ -50,21 +50,65 @@ static void anim_wheel_set_scale(float s)
     else g_anim_wheel_font_profile = J_WHEEL_FONT_M;
 }
 
-/* Keep same list (source of truth for selector) */
+/* ===== FX LIST PROVIDER =====
+ * Two modes:
+ *  1) Dynamic (preferred): provided by g_bind callbacks (FX cache from Lamp)
+ *  2) Fallback: local static list (bring-up / offline)
+ */
+
 static const char *g_animation_list[] = {
     "Ambient",
     "Aurora",
-    "Neon",
-    "Plasma",
-    "Embers",
-    "Ripple",
-    "Comet",
+    "Fire",
+    "Rainbow",
     "Matrix",
-    "Pulse",
+    "Plasma",
     "Waves",
-    "Glitch"
+    "Sparkles",
+    "Stars",
+    "Noise",
+    "Diag",
 };
-#define J_ANIM_COUNT ((int)(sizeof(g_animation_list)/sizeof(g_animation_list[0])))
+
+static bool fx_provider_ready(void)
+{
+    return g_inited &&
+           (g_bind.fx_get_count != NULL) &&
+           (g_bind.fx_get_name  != NULL) &&
+           (g_bind.fx_get_id    != NULL);
+}
+
+static int fx_count(void)
+{
+    if (fx_provider_ready()) {
+        int c = (int)g_bind.fx_get_count(g_bind.fx_arg);
+        return (c > 0) ? c : 0;
+    }
+    return (int)(sizeof(g_animation_list) / sizeof(g_animation_list[0]));
+}
+
+static const char *fx_name(uint16_t idx)
+{
+    if (fx_provider_ready()) {
+        const char *s = g_bind.fx_get_name(g_bind.fx_arg, idx);
+        if (s && s[0]) return s;
+    }
+
+    const uint16_t c = (uint16_t)(sizeof(g_animation_list) / sizeof(g_animation_list[0]));
+    if (idx < c) return g_animation_list[idx];
+
+    return "<?>"; /* safe placeholder */
+}
+
+
+static uint16_t fx_id(uint16_t idx)
+{
+    if (fx_provider_ready()) {
+        return g_bind.fx_get_id(g_bind.fx_arg, idx);
+    }
+    return idx; /* fallback: id == index */
+}
+
 
 static const struct {
     int32_t arc_radius;
@@ -150,17 +194,17 @@ static inline void lv_obj_del_safe(lv_obj_t **pp)
 
 static int wrap_index(int idx)
 {
-    if (J_ANIM_COUNT <= 0) return 0;
-    int r = idx % J_ANIM_COUNT;
-    if (r < 0) r += J_ANIM_COUNT;
+    if (fx_count() <= 0) return 0;
+    int r = idx % fx_count();
+    if (r < 0) r += fx_count();
     return r;
 }
 
 static int clamp_index(int idx)
 {
-    if (J_ANIM_COUNT <= 0) return 0;
+    if (fx_count() <= 0) return 0;
     if (idx < 0) return 0;
-    if (idx >= J_ANIM_COUNT) return (J_ANIM_COUNT - 1);
+    if (idx >= fx_count()) return (fx_count() - 1);
     return idx;
 }
 
@@ -189,10 +233,10 @@ static const lv_font_t *font_for_level(int lvl)
     switch (g_anim_wheel_font_profile) {
     case J_WHEEL_FONT_S:
         return (lvl <= 1) ? &lv_font_montserrat_22 : &lv_font_montserrat_18;
-    case J_WHEEL_FONT_L:
-        return (lvl == 0) ? &lv_font_montserrat_34 :
-               (lvl == 1) ? &lv_font_montserrat_28 :
-               (lvl == 2) ? &lv_font_montserrat_22 : &lv_font_montserrat_18;
+        case J_WHEEL_FONT_L:
+        return (lvl == 0) ? &lv_font_montserrat_28 :
+               (lvl == 1) ? &lv_font_montserrat_22 :
+               (lvl == 2) ? &lv_font_montserrat_18 : &lv_font_montserrat_14;
     case J_WHEEL_FONT_M:
     default:
         return (lvl == 0) ? &lv_font_montserrat_28 :
@@ -232,22 +276,31 @@ static void snap_exec_cb(void *var, int32_t v)
     selector_update();
 }
 
-static void selector_apply(int new_index)
+static void selector_apply(int idx)
 {
-    if (J_ANIM_COUNT <= 0) return;
+    if (idx < 0) return;
+    if (idx >= fx_count()) return;
 
-    int idx = J_ANIM_CFG.cyclic ? wrap_index(new_index) : clamp_index(new_index);
+    /* Keep current selection consistent */
     s_index = idx;
     s_pos = (float)idx;
 
-    if (g_bind.set_mode) g_bind.set_mode(g_animation_list[idx]);
+    if (g_bind.set_mode) g_bind.set_mode(fx_name((uint16_t)idx));
     if (g_bind.request_refresh) g_bind.request_refresh();
+
+    /* Send selection (effect_id) via callback, if provided */
+    if (g_bind.fx_on_select) {
+        g_bind.fx_on_select(g_bind.fx_arg, fx_id((uint16_t)idx));
+    }
 }
+
+
+
 
 static void selector_update(void)
 {
     if (!s_overlay || !s_area) return;
-    if (J_ANIM_COUNT <= 0) return;
+    if (fx_count() <= 0) return;
 
     int32_t area_w = lv_obj_get_width(s_area);
     int32_t area_h = lv_obj_get_height(s_area);
@@ -266,8 +319,9 @@ static void selector_update(void)
     int idx0 = J_ANIM_CFG.cyclic ? wrap_index(base) : clamp_index(base);
     int idx1 = J_ANIM_CFG.cyclic ? wrap_index(base + 1) : clamp_index(base + 1);
 
-    const char *t0 = g_animation_list[idx0];
-    const char *t1 = g_animation_list[idx1];
+    const char *t0 = fx_name((uint16_t)idx0);
+    const char *t1 = fx_name((uint16_t)idx1);
+
 
     lv_coord_t h0 = text_h_for(t0, font_for_level(0));
     lv_coord_t h1 = text_h_for(t1, font_for_level(1));
@@ -287,7 +341,7 @@ static void selector_update(void)
         int lvl = (i < 0) ? -i : i;
         if (lvl > 3) lvl = 3;
 
-        const char *txt = g_animation_list[idx];
+        const char *txt = fx_name(idx);
         const lv_font_t *font = font_for_level(lvl);
 
         lv_label_set_text(lab, txt);
@@ -311,7 +365,7 @@ static void selector_update(void)
                 int idx_cur_raw = base + (dir * s);
                 int idx_cur = J_ANIM_CFG.cyclic ? wrap_index(idx_cur_raw) : clamp_index(idx_cur_raw);
 
-                const char *tcur = g_animation_list[idx_cur];
+                const char *tcur = fx_name((uint16_t)idx_cur);
                 const lv_font_t *fcur = font_for_level(lvl_cur);
                 lv_coord_t h_cur = text_h_for(tcur, fcur);
 
@@ -332,7 +386,7 @@ static void selector_update(void)
 
 static void selector_snap(bool animate)
 {
-    if (J_ANIM_COUNT <= 0) return;
+    if (fx_count() <= 0) return;
 
     int target = (int)lroundf(s_pos);
     target = J_ANIM_CFG.cyclic ? wrap_index(target) : clamp_index(target);
@@ -371,12 +425,12 @@ static void inertia_timer_cb(lv_timer_t *t)
     last_ms = now;
 
     s_pos += s_vel * dt;
-    if (J_ANIM_CFG.cyclic && J_ANIM_COUNT > 0) {
-        while (s_pos < 0.0f) s_pos += (float)J_ANIM_COUNT;
-        while (s_pos >= (float)J_ANIM_COUNT) s_pos -= (float)J_ANIM_COUNT;
+    if (J_ANIM_CFG.cyclic && fx_count() > 0) {
+        while (s_pos < 0.0f) s_pos += (float)fx_count();
+        while (s_pos >= (float)fx_count()) s_pos -= (float)fx_count();
     } else {
         if (s_pos < 0.0f) { s_pos = 0.0f; s_vel = 0.0f; }
-        if (s_pos > (float)(J_ANIM_COUNT - 1)) { s_pos = (float)(J_ANIM_COUNT - 1); s_vel = 0.0f; }
+        if (s_pos > (float)(fx_count() - 1)) { s_pos = (float)(fx_count() - 1); s_vel = 0.0f; }
     }
 
     float k = 1.0f - (J_ANIM_CFG.decel_per_s * dt);
@@ -397,6 +451,8 @@ static void inertia_timer_cb(lv_timer_t *t)
 static void selector_event_cb(lv_event_t *e)
 {
     lv_event_code_t code = lv_event_get_code(e);
+    lv_event_stop_bubbling(e);
+
     lv_indev_t *indev = lv_indev_get_act();
     if (!indev) return;
 
@@ -415,10 +471,11 @@ static void selector_event_cb(lv_event_t *e)
         s_p_last = p;
         s_t_last_ms = lv_tick_get();
 
-        s_vel = 0.0f;
         if (s_inertia_timer) lv_timer_pause(s_inertia_timer);
+        s_vel = 0.0f;
     }
     else if (code == LV_EVENT_PRESSING && s_dragging) {
+
         int dx = p.x - s_p_down.x;
         int dy = p.y - s_p_down.y;
 
@@ -459,27 +516,60 @@ static void selector_event_cb(lv_event_t *e)
         s_dragging = false;
 
         int total_dx = p.x - s_p_down.x;
+        int total_dy = p.y - s_p_down.y;
 
-        if (s_axis_locked && !s_lock_vertical) {
-            int horiz_step_px = j_scale_px_i(J_ANIM_CFG.horiz_step_px);
+        int horiz_step_px = j_scale_px_i(J_ANIM_CFG.horiz_step_px);
+        if (horiz_step_px < 1) horiz_step_px = 1;
+
+        /* Horizontal swipe:
+         * - either axis already locked horizontal,
+         * - or (fallback) on fast swipe we detect it here on RELEASE.
+         */
+        bool is_horizontal_swipe =
+            (s_axis_locked && !s_lock_vertical) ||
+            (!s_axis_locked && (abs(total_dx) >= horiz_step_px) && (abs(total_dx) > abs(total_dy)));
+
+            /* Tap / double-tap handling (no swipe, no drag).
+         * We must handle it here because taps land on s_area, not on s_overlay.
+         */
+        const int tap_px = lock_px; /* same threshold as axis lock */
+        const bool is_tap = (abs(total_dx) <= tap_px) && (abs(total_dy) <= tap_px) && !s_dragged_far;
+
+        if (is_tap) {
+            uint32_t now = lv_tick_get();
+            if (s_last_click_ms != 0 && lv_tick_elaps(s_last_click_ms) < J_DOUBLE_TAP_MS) {
+                s_last_click_ms = 0;
+                ui_anim_overlay_close();
+            } else {
+                s_last_click_ms = now;
+            }
+            return; /* IMPORTANT: do not snap/apply on simple taps */
+        }
+
+
+        if (is_horizontal_swipe) {
             if (abs(total_dx) >= horiz_step_px) {
-                if (total_dx < 0) selector_apply(s_index - 1);
-                else              selector_apply(s_index + 1);
+                int tgt = s_index + ((total_dx < 0) ? -1 : +1);
+                tgt = J_ANIM_CFG.cyclic ? wrap_index(tgt) : clamp_index(tgt);
+
+                /* Snap will call selector_apply(tgt) once in ready_cb */
+                s_pos = (float)tgt;
+                s_vel = 0.0f;
                 selector_snap(true);
             } else {
                 selector_snap(true);
             }
         } else {
+            /* Vertical inertia path */
             if (fabsf(s_vel) > J_ANIM_CFG.vel_stop) {
                 if (s_inertia_timer) lv_timer_resume(s_inertia_timer);
             } else {
                 selector_snap(true);
             }
         }
-
-        if (s_dragged_far) lv_event_stop_bubbling(e);
     }
 }
+
 
 static void selector_build(void)
 {
@@ -500,7 +590,6 @@ static void selector_build(void)
     lv_obj_align(s_area, LV_ALIGN_CENTER, J_ANIM_POS_X, J_ANIM_POS_Y);
     make_invisible_hit_area(s_area);
     lv_obj_add_flag(s_area, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_add_flag(s_area, LV_OBJ_FLAG_EVENT_BUBBLE);
 
     lv_obj_add_event_cb(s_area, selector_event_cb, LV_EVENT_PRESSED, NULL);
     lv_obj_add_event_cb(s_area, selector_event_cb, LV_EVENT_PRESSING, NULL);
@@ -530,6 +619,7 @@ static void selector_build(void)
 static void overlay_event_cb(lv_event_t *e)
 {
     lv_event_code_t code = lv_event_get_code(e);
+    lv_event_stop_bubbling(e);
     if (code != LV_EVENT_CLICKED) return;
 
     uint32_t now = lv_tick_get();

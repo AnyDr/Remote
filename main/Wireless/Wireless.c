@@ -57,6 +57,10 @@ void WIFI_Init(void *arg)
     // ESPNOW поверх уже поднятого STA
     j_espnow_link_start();
 
+    /* Trigger FX list sync from lamp (HELLO meta -> chunks) */
+    (void)j_esn_fx_sync_start();
+
+
     uint8_t mac[6] = {0};
     if (esp_wifi_get_mac(WIFI_IF_STA, mac) == ESP_OK) {
         printf("WIFI STA MAC: %02X:%02X:%02X:%02X:%02X:%02X\r\n",

@@ -43,6 +43,57 @@
 #endif
 
 
+/* ============================================================
+ *              FX CACHE ACCESS (OPTIONAL, WEAK)
+ * ============================================================
+ *
+ * These are expected to be provided by the ESPNOW FX-sync module.
+ * If that module isn't linked, weak stubs keep the build working
+ * and ui_anim_overlay falls back to its internal static list.
+ */
+
+__attribute__((weak)) uint16_t j_esn_fx_cache_count(void)
+{
+    return 0;
+}
+
+__attribute__((weak)) const char *j_esn_fx_cache_name_by_index(uint16_t index)
+{
+    (void)index;
+    return NULL;
+}
+
+__attribute__((weak)) uint16_t j_esn_fx_cache_id_by_index(uint16_t index)
+{
+    return index;
+}
+
+static uint16_t ui_fx_get_count(void *arg)
+{
+    (void)arg;
+    return j_esn_fx_cache_count();
+}
+
+static const char *ui_fx_get_name(void *arg, uint16_t index)
+{
+    (void)arg;
+    return j_esn_fx_cache_name_by_index(index);
+}
+
+static uint16_t ui_fx_get_id(void *arg, uint16_t index)
+{
+    (void)arg;
+    return j_esn_fx_cache_id_by_index(index);
+}
+
+static void ui_fx_on_select(void *arg, uint16_t effect_id)
+{
+    (void)arg;
+    /* send to Lamp via ESPNOW */
+    j_esn_send_anim_id(effect_id);
+}
+
+
 
 /* ============================================================
  *                      CONSTANTS
@@ -82,6 +133,9 @@
 #define J_ANIM_POS_Y    0     /* (-) up,   (+) down */
 
 #define J_DOUBLE_TAP_MS        350
+#define J_PAUSE_HOLD_MS        700
+#define J_POWER_HOLD_MS        5000
+
 
 /* ============================================================
  *                HITBOX DEBUG CONFIG
@@ -321,6 +375,16 @@ static lv_coord_t g_arc_size    = 0;
 
 static uint32_t g_center_last_click_ms = 0;
 static uint32_t g_honey_center_last_click_ms = 0;
+
+static uint32_t g_center_press_start_ms = 0;
+static uint32_t g_honey_press_start_ms  = 0;
+
+static bool g_center_suppress_click = false;
+static bool g_honey_suppress_click  = false;
+
+/* Локальное состояние паузы на пульте (toggle как раньше) */
+static bool g_ui_paused = false;
+
 
 
 /* ============================================================
@@ -689,78 +753,226 @@ static void device_screen_switch_to_prev(void)
  *                     EVENT CALLBACKS
  * ============================================================*/
 
+/* ===== BEGIN PATCH: center-only tap radius (about 1 cm) ===== */
+
+static bool ui_point_in_center_radius_px(const lv_point_t *p, lv_coord_t r_px)
+{
+    if (!p) return false;
+    if (r_px <= 0) return false;
+
+    lv_coord_t cx = g_screen_w / 2;
+    lv_coord_t cy = g_screen_h / 2;
+
+    int32_t dx = (int32_t)p->x - (int32_t)cx;
+    int32_t dy = (int32_t)p->y - (int32_t)cy;
+
+    int32_t rr = (int32_t)r_px * (int32_t)r_px;
+    int32_t dd = dx * dx + dy * dy;
+
+    return (dd <= rr);
+}
+
+static bool ui_is_center_tap_radius_px(lv_coord_t r_px)
+{
+    lv_indev_t *indev = lv_indev_get_act();
+    if (!indev) return false;
+
+    lv_point_t p;
+    lv_indev_get_point(indev, &p);
+
+    return ui_point_in_center_radius_px(&p, r_px);
+}
+
+/* ===== END PATCH ===== */
+
+
 static void center_event_cb(lv_event_t *e)
 {
     lv_event_code_t code = lv_event_get_code(e);
 
+    /* Радиус "1 см" как доля диаметра экрана 1.46" (~3.71 см):
+     * 1 см / 3.71 см ≈ 0.27 от диаметра.
+     */
+    const lv_coord_t r_px = (lv_coord_t)((g_screen_size * 27) / 100);
+
+    /* Фильтр по радиусу для всех событий центра */
+    if ((code == LV_EVENT_PRESSED) ||
+        (code == LV_EVENT_RELEASED) ||
+        (code == LV_EVENT_PRESS_LOST) ||
+        (code == LV_EVENT_CLICKED)) {
+
+        if (!ui_is_center_tap_radius_px(r_px)) {
+            /* не копим double-tap и не считаем удержание */
+            g_center_last_click_ms = 0;
+            g_center_press_start_ms = 0;
+            g_center_suppress_click = false;
+            return;
+        }
+    }
+
+    if (code == LV_EVENT_PRESSED) {
+        g_center_press_start_ms = lv_tick_get();
+        g_center_suppress_click = false;
+        return;
+    }
+
+    if (code == LV_EVENT_PRESS_LOST) {
+        g_center_press_start_ms = 0;
+        g_center_suppress_click = false;
+        g_center_last_click_ms = 0;
+        return;
+    }
+
+    if (code == LV_EVENT_RELEASED) {
+        if (g_center_press_start_ms == 0) return;
+
+        uint32_t held_ms = lv_tick_elaps(g_center_press_start_ms);
+        g_center_press_start_ms = 0;
+
+        if (held_ms >= J_POWER_HOLD_MS) {
+            j_dev_ctx_t *d = ui_active_dev_ctx();
+            device_state_t *st = (d && d->st) ? d->st : &g_current_device;
+
+            st->is_on = !st->is_on;
+            j_esn_send_power(st->is_on);
+
+            LV_LOG_USER("Center hold %u ms: toggle power -> %d", (unsigned)held_ms, st->is_on);
+            ui_refresh_all_screens();
+
+            /* чтобы после удержания не сработал CLICKED/double tap */
+            g_center_last_click_ms = 0;
+            g_center_suppress_click = true;
+            return;
+        }
+
+        if (held_ms >= J_PAUSE_HOLD_MS) {
+            g_ui_paused = !g_ui_paused;
+            j_esn_send_pause(g_ui_paused);
+
+            LV_LOG_USER("Center hold %u ms: toggle pause -> %d", (unsigned)held_ms, g_ui_paused);
+
+            g_center_last_click_ms = 0;
+            g_center_suppress_click = true;
+            return;
+        }
+
+        /* короткое удержание: ничего, CLICKED обработает double tap */
+        return;
+    }
+
     if (code == LV_EVENT_CLICKED) {
+        if (g_center_suppress_click) {
+            g_center_suppress_click = false;
+            return;
+        }
+
         uint32_t now = lv_tick_get();
 
         if (g_center_last_click_ms != 0 &&
             lv_tick_elaps(g_center_last_click_ms) < J_DOUBLE_TAP_MS) {
 
             g_center_last_click_ms = 0;
-            LV_LOG_USER("Center double click: open animation overlay");
+            LV_LOG_USER("Center double click (center-only): open animation overlay");
             ui_anim_overlay_open();
         } else {
             g_center_last_click_ms = now;
-            static bool s_paused = false;
-            s_paused = !s_paused;
-            LV_LOG_USER("Center single click: toggle pause -> %d", s_paused);
-            j_esn_send_pause(s_paused);
-
+            /* одиночный короткий тап теперь ничего не делает */
         }
+        return;
     }
-    // ===== BEGIN PATCH: toggle active device power =====
-else if (code == LV_EVENT_LONG_PRESSED) {
-    j_dev_ctx_t *d = ui_active_dev_ctx();
-    device_state_t *st = (d && d->st) ? d->st : &g_current_device;
-
-    st->is_on = !st->is_on;
-    j_esn_send_power(st->is_on);
-
-    LV_LOG_USER("Center long press: toggle power -> %d", st->is_on);
-    ui_refresh_all_screens();
 }
-// ===== END PATCH =====
 
-}
+
 
 static void honeycomb_center_event_cb(lv_event_t *e)
 {
     lv_event_code_t code = lv_event_get_code(e);
 
+    const lv_coord_t r_px = (lv_coord_t)((g_screen_size * 27) / 100);
+
+    if ((code == LV_EVENT_PRESSED) ||
+        (code == LV_EVENT_RELEASED) ||
+        (code == LV_EVENT_PRESS_LOST) ||
+        (code == LV_EVENT_CLICKED)) {
+
+        if (!ui_is_center_tap_radius_px(r_px)) {
+            g_honey_center_last_click_ms = 0;
+            g_honey_press_start_ms = 0;
+            g_honey_suppress_click = false;
+            return;
+        }
+    }
+
+    if (code == LV_EVENT_PRESSED) {
+        g_honey_press_start_ms = lv_tick_get();
+        g_honey_suppress_click = false;
+        return;
+    }
+
+    if (code == LV_EVENT_PRESS_LOST) {
+        g_honey_press_start_ms = 0;
+        g_honey_suppress_click = false;
+        g_honey_center_last_click_ms = 0;
+        return;
+    }
+
+    if (code == LV_EVENT_RELEASED) {
+        if (g_honey_press_start_ms == 0) return;
+
+        uint32_t held_ms = lv_tick_elaps(g_honey_press_start_ms);
+        g_honey_press_start_ms = 0;
+
+        if (held_ms >= J_POWER_HOLD_MS) {
+            j_dev_ctx_t *d = ui_active_dev_ctx();
+            device_state_t *st = (d && d->st) ? d->st : &g_current_device;
+
+            st->is_on = !st->is_on;
+            j_esn_send_power(st->is_on);
+
+            LV_LOG_USER("HoneyComb hold %u ms: toggle power -> %d", (unsigned)held_ms, st->is_on);
+            ui_refresh_all_screens();
+
+            g_honey_center_last_click_ms = 0;
+            g_honey_suppress_click = true;
+            return;
+        }
+
+        if (held_ms >= J_PAUSE_HOLD_MS) {
+            g_ui_paused = !g_ui_paused;
+            j_esn_send_pause(g_ui_paused);
+
+            LV_LOG_USER("HoneyComb hold %u ms: toggle pause -> %d", (unsigned)held_ms, g_ui_paused);
+
+            g_honey_center_last_click_ms = 0;
+            g_honey_suppress_click = true;
+            return;
+        }
+
+        return;
+    }
+
     if (code == LV_EVENT_CLICKED) {
+        if (g_honey_suppress_click) {
+            g_honey_suppress_click = false;
+            return;
+        }
+
         uint32_t now = lv_tick_get();
 
         if (g_honey_center_last_click_ms != 0 &&
             lv_tick_elaps(g_honey_center_last_click_ms) < J_DOUBLE_TAP_MS) {
 
             g_honey_center_last_click_ms = 0;
-            LV_LOG_USER("HoneyComb center double click: open animation overlay");
+            LV_LOG_USER("HoneyComb center double click (center-only): open animation overlay");
             ui_anim_overlay_open();
         } else {
             g_honey_center_last_click_ms = now;
-            static bool s_paused = false;
-            s_paused = !s_paused;
-            LV_LOG_USER("Center single click: toggle pause -> %d", s_paused);
-            j_esn_send_pause(s_paused);
-
         }
+        return;
     }
-    // ===== BEGIN PATCH: toggle active device power (HoneyComb) =====
-        else if (code == LV_EVENT_LONG_PRESSED) {
-            j_dev_ctx_t *d = ui_active_dev_ctx();
-            device_state_t *st = (d && d->st) ? d->st : &g_current_device;
-
-            st->is_on = !st->is_on;
-            j_esn_send_power(st->is_on);
-            LV_LOG_USER("HoneyComb center long press: toggle power -> %d", st->is_on);
-            ui_refresh_all_screens();
 }
-// ===== END PATCH =====
 
-}
+
 
 static void honeycomb_bottom_dev_container_event_cb(lv_event_t *e)
 {
@@ -1163,9 +1375,13 @@ static lv_obj_t *ui_create_device_screen(void)
     lv_obj_set_style_pad_all(center_container, 8, 0);
     lv_obj_clear_flag(center_container, LV_OBJ_FLAG_SCROLLABLE);
 
+    lv_obj_add_event_cb(center_container, center_event_cb, LV_EVENT_PRESSED, NULL);
+    lv_obj_add_event_cb(center_container, center_event_cb, LV_EVENT_RELEASED, NULL);
+    lv_obj_add_event_cb(center_container, center_event_cb, LV_EVENT_PRESS_LOST, NULL);
     lv_obj_add_event_cb(center_container, center_event_cb, LV_EVENT_CLICKED, NULL);
-    lv_obj_add_event_cb(center_container, center_event_cb, LV_EVENT_LONG_PRESSED, NULL);
+
     lv_obj_add_flag(center_container, LV_OBJ_FLAG_EVENT_BUBBLE);
+
 
     apply_hitbox_debug_to_panel(center_container,
                                 J_DEBUG_HITBOX_CENTER,
@@ -2050,17 +2266,24 @@ if (screen_honeycomb) {
 }
 
 
-
-        /* Bind animation overlay module to current app context */
+    /* Bind animation overlay module to current app context */
     ui_anim_overlay_bind_t anim_bind = {
-        .p_screen_w       = &g_screen_w,
-        .p_screen_h       = &g_screen_h,
-        .p_screen_size    = &g_screen_size,
-        .set_overlay      = ui_anim_set_overlay,
-        .set_mode         = ui_anim_set_mode,
-        .request_refresh  = ui_anim_request_refresh,
+        .p_screen_w      = &g_screen_w,
+        .p_screen_h      = &g_screen_h,
+        .p_screen_size   = &g_screen_size,
+
+        .set_overlay     = ui_anim_set_overlay,
+        .set_mode        = ui_anim_set_mode,
+        .request_refresh = ui_anim_request_refresh,
+
+        .fx_get_count    = ui_fx_get_count,
+        .fx_get_name     = ui_fx_get_name,
+        .fx_get_id       = ui_fx_get_id,
+        .fx_on_select    = ui_fx_on_select,
     };
+
     ui_anim_overlay_init(&anim_bind);
+
 
 
     /* Bind screens into device registry */

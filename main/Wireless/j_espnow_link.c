@@ -9,11 +9,169 @@
 #include "esp_now.h"
 #include "esp_wifi.h"
 
+#include "nvs.h"
+#include "nvs_flash.h"
+
+
 static const char *TAG = "J_ESN_R";
 
 static uint32_t s_seq = 1;
 static uint8_t  s_peer_mac[6] = {0};
 static bool     s_peer_ok = false;
+
+/* =========================
+ * FX LIST CACHE (RAM + NVS)
+ * ========================= */
+
+#ifndef J_ESN_FX_CACHE_MAX
+#define J_ESN_FX_CACHE_MAX 256
+#endif
+
+typedef struct __attribute__((packed)) {
+    uint16_t count;
+    uint32_t crc32;
+} j_esn_fx_meta_nvs_t;
+
+static bool     s_fx_valid = false;
+static uint16_t s_fx_count = 0;
+static uint32_t s_fx_crc32 = 0;
+static j_esn_fx_entry_t s_fx_entries[J_ESN_FX_CACHE_MAX];
+
+static uint16_t s_last_effect_id = 0;
+
+/* sync state */
+static bool     s_fx_sync_in_progress = false;
+static uint16_t s_fx_sync_next_index  = 0;
+static uint16_t s_fx_sync_total       = 0;
+static uint32_t s_fx_sync_crc32       = 0;
+
+/* update callback */
+static j_esn_fx_updated_cb_t s_fx_updated_cb = NULL;
+static void *s_fx_updated_arg = NULL;
+
+static void fx_notify_updated(void)
+{
+    if (s_fx_updated_cb) s_fx_updated_cb(s_fx_updated_arg);
+}
+
+static void fx_cache_clear(void)
+{
+    s_fx_valid = false;
+    s_fx_count = 0;
+    s_fx_crc32 = 0;
+    memset(s_fx_entries, 0, sizeof(s_fx_entries));
+}
+
+static esp_err_t fx_cache_load_nvs(void)
+{
+    nvs_handle_t nvh;
+    esp_err_t err = nvs_open("j_esn_fx", NVS_READONLY, &nvh);
+    if (err != ESP_OK) return err;
+
+    j_esn_fx_meta_nvs_t meta = {0};
+    size_t sz = sizeof(meta);
+    err = nvs_get_blob(nvh, "meta", &meta, &sz);
+    if (err != ESP_OK || sz != sizeof(meta)) {
+        nvs_close(nvh);
+        return ESP_FAIL;
+    }
+
+    if (meta.count == 0 || meta.count > J_ESN_FX_CACHE_MAX) {
+        nvs_close(nvh);
+        return ESP_FAIL;
+    }
+
+    size_t list_sz = 0;
+    err = nvs_get_blob(nvh, "list", NULL, &list_sz);
+    if (err != ESP_OK || list_sz != (size_t)meta.count * sizeof(j_esn_fx_entry_t)) {
+        nvs_close(nvh);
+        return ESP_FAIL;
+    }
+
+    memset(s_fx_entries, 0, sizeof(s_fx_entries));
+    err = nvs_get_blob(nvh, "list", s_fx_entries, &list_sz);
+    nvs_close(nvh);
+    if (err != ESP_OK) return err;
+
+    /* sanitize names */
+    for (uint16_t i = 0; i < meta.count; i++) {
+        s_fx_entries[i].name[J_ESN_FX_NAME_MAX - 1] = '\0';
+    }
+
+    s_fx_count = meta.count;
+    s_fx_crc32 = meta.crc32;
+    s_fx_valid = true;
+
+    ESP_LOGI(TAG, "FX cache loaded: count=%u crc=0x%08X",
+             (unsigned)s_fx_count, (unsigned)s_fx_crc32);
+
+    return ESP_OK;
+}
+
+static esp_err_t fx_cache_save_nvs(void)
+{
+    if (!s_fx_valid || s_fx_count == 0) return ESP_ERR_INVALID_STATE;
+
+    nvs_handle_t nvh;
+    esp_err_t err = nvs_open("j_esn_fx", NVS_READWRITE, &nvh);
+    if (err != ESP_OK) return err;
+
+    j_esn_fx_meta_nvs_t meta = {
+        .count = s_fx_count,
+        .crc32 = s_fx_crc32,
+    };
+
+    err = nvs_set_blob(nvh, "meta", &meta, sizeof(meta));
+    if (err == ESP_OK) {
+        err = nvs_set_blob(nvh, "list", s_fx_entries, (size_t)s_fx_count * sizeof(j_esn_fx_entry_t));
+    }
+    if (err == ESP_OK) {
+        err = nvs_commit(nvh);
+    }
+    nvs_close(nvh);
+
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "FX cache saved: count=%u crc=0x%08X",
+                 (unsigned)s_fx_count, (unsigned)s_fx_crc32);
+    }
+    return err;
+}
+
+/* ---- HELLO send helpers ---- */
+
+static esp_err_t send_hello_meta_req(void)
+{
+    if (!s_peer_ok) return ESP_ERR_INVALID_STATE;
+
+    j_esn_fx_meta_req_t m = {0};
+    m.h.magic    = J_ESN_MAGIC;
+    m.h.ver      = J_ESN_VER;
+    m.h.type     = J_ESN_MSG_HELLO;
+    m.h.src_node = (uint16_t)CONFIG_J_NODE_ID;
+    m.h.dst_node = 0xFFFF;
+    m.h.seq      = s_seq++;
+    m.hello_cmd  = J_ESN_HELLO_FX_META_REQ;
+
+    return esp_now_send(s_peer_mac, (const uint8_t*)&m, sizeof(m));
+}
+
+static esp_err_t send_hello_chunk_req(uint16_t start_index)
+{
+    if (!s_peer_ok) return ESP_ERR_INVALID_STATE;
+
+    j_esn_fx_chunk_req_t m = {0};
+    m.h.magic      = J_ESN_MAGIC;
+    m.h.ver        = J_ESN_VER;
+    m.h.type       = J_ESN_MSG_HELLO;
+    m.h.src_node   = (uint16_t)CONFIG_J_NODE_ID;
+    m.h.dst_node   = 0xFFFF;
+    m.h.seq        = s_seq++;
+    m.hello_cmd    = J_ESN_HELLO_FX_CHUNK_REQ;
+    m.start_index  = start_index;
+
+    return esp_now_send(s_peer_mac, (const uint8_t*)&m, sizeof(m));
+}
+
 
 static bool parse_hex_byte(const char *s, uint8_t *out)
 {
@@ -45,23 +203,130 @@ static void on_sent(const wifi_tx_info_t *tx_info, esp_now_send_status_t status)
 
 static void on_recv(const esp_now_recv_info_t *info, const uint8_t *data, int len)
 {
-    if (!info || !data || len < 4) return;
+    if (!info || !data || len < (int)sizeof(j_esn_hdr_t)) return;
 
-    const uint16_t *pmagic = (const uint16_t*)data;
-    if (*pmagic != J_ESN_MAGIC) return;
+    const j_esn_hdr_t *h = (const j_esn_hdr_t*)data;
+    if (h->magic != J_ESN_MAGIC || h->ver != J_ESN_VER) return;
 
-    if (len >= (int)sizeof(j_esn_ack_t)) {
+    if (h->type == J_ESN_MSG_ACK) {
+        if (len < (int)sizeof(j_esn_ack_t)) return;
+
         const j_esn_ack_t *a = (const j_esn_ack_t*)data;
-        if (a->ver == J_ESN_VER && a->type == J_ESN_MSG_ACK) {
-            ESP_LOGI(TAG, "ACK seq=%u effect=%u bright=%u paused=%u speed=%u",
-                     (unsigned)a->ack_seq,
-                     (unsigned)a->effect_id,
-                     (unsigned)a->brightness,
-                     (unsigned)a->paused,
-                     (unsigned)a->speed_pct);
+        s_last_effect_id = a->effect_id;
+
+        ESP_LOGI(TAG, "ACK seq=%u effect=%u bright=%u paused=%u speed=%u",
+                 (unsigned)a->ack_seq,
+                 (unsigned)a->effect_id,
+                 (unsigned)a->brightness,
+                 (unsigned)a->paused,
+                 (unsigned)a->speed_pct);
+        return;
+    }
+
+    if (h->type == J_ESN_MSG_HELLO) {
+        /* at least hdr + hello_cmd */
+        if (len < (int)(sizeof(j_esn_hdr_t) + 1)) return;
+
+        const uint8_t *p = (const uint8_t*)data;
+        uint8_t hello_cmd = p[sizeof(j_esn_hdr_t)];
+
+        if (hello_cmd == J_ESN_HELLO_FX_META_RSP) {
+            if (len < (int)sizeof(j_esn_fx_meta_rsp_t)) return;
+            const j_esn_fx_meta_rsp_t *rsp = (const j_esn_fx_meta_rsp_t*)data;
+
+            ESP_LOGI(TAG, "FX META: count=%u crc=0x%08X",
+                     (unsigned)rsp->fx_count, (unsigned)rsp->fx_crc32);
+
+            if (rsp->fx_count == 0 || rsp->fx_count > J_ESN_FX_CACHE_MAX) {
+                ESP_LOGW(TAG, "FX META: unsupported count=%u (max=%u)",
+                         (unsigned)rsp->fx_count, (unsigned)J_ESN_FX_CACHE_MAX);
+                return;
+            }
+
+            /* If cache matches, nothing to do */
+            if (s_fx_valid && s_fx_count == rsp->fx_count && s_fx_crc32 == rsp->fx_crc32) {
+                ESP_LOGI(TAG, "FX META: cache already up-to-date");
+                s_fx_sync_in_progress = false;
+                return;
+            }
+
+            /* Start sync */
+            s_fx_sync_in_progress = true;
+            s_fx_sync_next_index  = 0;
+            s_fx_sync_total       = rsp->fx_count;
+            s_fx_sync_crc32       = rsp->fx_crc32;
+
+            /* clear target buffer (but keep old cache valid until done) */
+            memset(s_fx_entries, 0, sizeof(s_fx_entries));
+
+            (void)send_hello_chunk_req(0);
+            return;
         }
+
+        if (hello_cmd == J_ESN_HELLO_FX_CHUNK_RSP) {
+            if (len < (int)(sizeof(j_esn_hdr_t) + 1 + 1 + 2 + 4)) return;
+            const j_esn_fx_chunk_rsp_t *rsp = (const j_esn_fx_chunk_rsp_t*)data;
+
+            if (!s_fx_sync_in_progress) {
+                ESP_LOGW(TAG, "FX CHUNK: ignored (sync not in progress)");
+                return;
+            }
+            if (rsp->fx_crc32 != s_fx_sync_crc32) {
+                ESP_LOGW(TAG, "FX CHUNK: crc mismatch rsp=0x%08X exp=0x%08X",
+                         (unsigned)rsp->fx_crc32, (unsigned)s_fx_sync_crc32);
+                return;
+            }
+            if (rsp->start_index != s_fx_sync_next_index) {
+                ESP_LOGW(TAG, "FX CHUNK: unexpected start=%u expected=%u",
+                         (unsigned)rsp->start_index, (unsigned)s_fx_sync_next_index);
+                return;
+            }
+            if (rsp->count == 0 || rsp->count > J_ESN_FX_CHUNK_MAX) {
+                ESP_LOGW(TAG, "FX CHUNK: bad count=%u", (unsigned)rsp->count);
+                return;
+            }
+
+            uint16_t n = rsp->count;
+            if ((uint16_t)(s_fx_sync_next_index + n) > s_fx_sync_total) {
+                n = (uint16_t)(s_fx_sync_total - s_fx_sync_next_index);
+            }
+
+            for (uint16_t i = 0; i < n; i++) {
+                uint16_t dst = (uint16_t)(s_fx_sync_next_index + i);
+                s_fx_entries[dst] = rsp->entries[i];
+                s_fx_entries[dst].name[J_ESN_FX_NAME_MAX - 1] = '\0';
+            }
+
+            s_fx_sync_next_index = (uint16_t)(s_fx_sync_next_index + n);
+
+            ESP_LOGI(TAG, "FX CHUNK: got %u items, progress %u/%u",
+                     (unsigned)n,
+                     (unsigned)s_fx_sync_next_index,
+                     (unsigned)s_fx_sync_total);
+
+            if (s_fx_sync_next_index < s_fx_sync_total) {
+                (void)send_hello_chunk_req(s_fx_sync_next_index);
+                return;
+            }
+
+            /* Done: commit new cache */
+            s_fx_count = s_fx_sync_total;
+            s_fx_crc32 = s_fx_sync_crc32;
+            s_fx_valid = true;
+            s_fx_sync_in_progress = false;
+
+            (void)fx_cache_save_nvs();
+            fx_notify_updated();
+
+            ESP_LOGI(TAG, "FX SYNC DONE: count=%u crc=0x%08X",
+                     (unsigned)s_fx_count, (unsigned)s_fx_crc32);
+            return;
+        }
+
+        return;
     }
 }
+
 
 esp_err_t j_espnow_link_start(void)
 {
@@ -82,6 +347,10 @@ esp_err_t j_espnow_link_start(void)
     ESP_ERROR_CHECK(esp_now_init());
     ESP_ERROR_CHECK(esp_now_register_send_cb(on_sent));
     ESP_ERROR_CHECK(esp_now_register_recv_cb(on_recv));
+
+    /* Load FX cache from NVS if present (NVS must be initialized before this call) */
+    (void)fx_cache_load_nvs();
+
 
     if (s_peer_ok) {
         esp_now_peer_info_t p = {0};
@@ -124,3 +393,42 @@ esp_err_t j_esn_send_pause(bool paused)          { return send_ctrl(J_ESN_CMD_SE
 esp_err_t j_esn_send_brightness_u8(uint8_t b)    { return send_ctrl(J_ESN_CMD_SET_BRIGHT, (uint16_t)b); }
 esp_err_t j_esn_send_speed_pct(uint16_t pct)     { return send_ctrl(J_ESN_CMD_SET_SPEED_PCT, pct); }
 esp_err_t j_esn_send_anim_id(uint16_t effect_id) { return send_ctrl(J_ESN_CMD_SET_ANIM, effect_id); }
+
+bool j_esn_fx_cache_valid(void) { return s_fx_valid; }
+
+uint16_t j_esn_fx_cache_count(void)
+{
+    return s_fx_valid ? s_fx_count : 0;
+}
+
+uint16_t j_esn_fx_cache_id_by_index(uint16_t idx)
+{
+    if (!s_fx_valid) return 0;
+    if (idx >= s_fx_count) return 0;
+    return s_fx_entries[idx].id;
+}
+
+const char *j_esn_fx_cache_name_by_index(uint16_t idx)
+{
+    if (!s_fx_valid) return NULL;
+    if (idx >= s_fx_count) return NULL;
+    return s_fx_entries[idx].name;
+}
+
+uint16_t j_esn_fx_last_effect_id(void)
+{
+    return s_last_effect_id;
+}
+
+esp_err_t j_esn_fx_sync_start(void)
+{
+    /* Safe even if no peer: just returns INVALID_STATE */
+    return send_hello_meta_req();
+}
+
+void j_esn_fx_set_updated_cb(j_esn_fx_updated_cb_t cb, void *arg)
+{
+    s_fx_updated_cb = cb;
+    s_fx_updated_arg = arg;
+}
+
