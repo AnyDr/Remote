@@ -1,0 +1,13 @@
+Command: cmake -G Ninja -DPYTHON_DEPS_CHECKED=1 -DPYTHON=E:\Espressif\python_env\idf5.5_py3.11_env\Scripts\python.exe -DESP_PLATFORM=1 -DCCACHE_ENABLE=1 D:\esp\ESP32-S3-Touch-LCD-Remote
+info: INFO: Symbol LV_MEM_SIZE_KILOBYTES defined in multiple locations (see below). Please check if this is a correct behavior or a random name match:
+    D:\esp\ESP32-S3-Touch-LCD-Remote\components\lvgl__lvgl\Kconfig:73
+    D:\esp\ESP32-S3-Touch-LCD-Remote\main\Kconfig.projbuild:2
+info: INFO: Symbol BT_ENABLED defined in multiple locations (see below). Please check if this is a correct behavior or a random name match:
+    E:\Espressif\frameworks\esp-idf-v5.5.1\components\bt\Kconfig:3
+    D:\esp\ESP32-S3-Touch-LCD-Remote\main\Kconfig.projbuild:5
+info: INFO: Symbol BT_BLE_50_FEATURES_SUPPORTED defined in multiple locations (see below). Please check if this is a correct behavior or a random name match:
+    E:\Espressif\frameworks\esp-idf-v5.5.1\components\bt\host\bluedroid\Kconfig.in:1288
+    D:\esp\ESP32-S3-Touch-LCD-Remote\main\Kconfig.projbuild:9
+info: INFO: Symbol BT_BLE_42_FEATURES_SUPPORTED defined in multiple locations (see below). Please check if this is a correct behavior or a random name match:
+    D:\esp\ESP32-S3-Touch-LCD-Remote\main\Kconfig.projbuild:13
+    E:\Espressif\frameworks\esp-idf-v5.5.1\components\bt\host\bluedroid\Kconfig.in:1353

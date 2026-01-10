@@ -1,0 +1,2 @@
+source D:/esp/ESP32-S3-Touch-LCD-Remote/build/bootloader/gdbinit/symbols
+source D:/esp/ESP32-S3-Touch-LCD-Remote/build/bootloader/gdbinit/connect
