@@ -220,6 +220,30 @@ static int clamp_index(int idx)
     return idx;
 }
 
+static int selector_find_index_by_fx_id(uint16_t fxid)
+{
+    if (fxid == 0xFFFF) return -1;
+
+    uint16_t n = fx_count();
+    for (uint16_t i = 0; i < n; i++) {
+        if (fx_id((int)i) == fxid) return (int)i;
+    }
+    return -1;
+}
+
+static void selector_set_index_silent(int idx)
+{
+    int n = (int)fx_count();
+    if (n <= 0) return;
+
+    if (J_ANIM_CFG.cyclic) idx = wrap_index(idx);
+    else                  idx = clamp_index(idx);
+
+    s_index = idx;
+    s_pos   = (float)idx;
+}
+
+
 /* Arc bending left: x = -(R - sqrt(R^2 - y^2)) + arc_x_offset */
 static int32_t arc_x_from_y(int32_t y_rel)
 {
@@ -620,7 +644,7 @@ static void selector_build(void)
     lv_obj_set_style_text_opa(s_labels[i], LV_OPA_COVER, 0);
 
     lv_label_set_text(s_labels[i], "...");
-}
+    }
 
 
     if (!s_inertia_timer) {
@@ -630,13 +654,14 @@ static void selector_build(void)
         lv_timer_pause(s_inertia_timer);
     }
 
-        /* ВАЖНО: вход в оверлей не должен менять режим/анимацию.
-     * Рисуем/инициализируем список, но ничего не "применяем".
-     * Первичный update сделает open() (когда оверлей уже правильно разложен).
+            /* ВАЖНО: вход в оверлей не должен менять режим/анимацию.
+     * selector_apply() = команда (set_mode + fx_on_select).
+     * Поэтому тут ТОЛЬКО рисуем текущий индекс (предселекция будет в open()).
      */
-    s_index = 0;
-    s_pos   = 0.0f;
+    selector_update();
 }
+
+
 
 
 /* Overlay click: double tap closes */
@@ -723,6 +748,17 @@ void ui_anim_overlay_open(void)
     lv_obj_add_event_cb(s_overlay, overlay_event_cb, LV_EVENT_CLICKED, NULL);
 
     selector_build();
+    
+    /* Предселекция: подсветить текущую/последнюю анимацию, но НЕ применять (без selector_apply). */
+    if (g_bind.fx_get_selected_id) {
+        uint16_t want = g_bind.fx_get_selected_id(g_bind.fx_arg);
+        int idx = selector_find_index_by_fx_id(want);
+        if (idx >= 0) {
+            selector_set_index_silent(idx);
+            selector_update(); /* чтобы сразу было видно правильную подсветку */
+        }
+    }
+
 
     /* Keep your previous choice: scale up wheel */
     anim_wheel_set_scale(1.30f);
