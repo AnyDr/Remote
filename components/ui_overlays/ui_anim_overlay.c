@@ -72,20 +72,32 @@ static const char *g_animation_list[] = {
 
 static bool fx_provider_ready(void)
 {
-    return g_inited &&
-           (g_bind.fx_get_count != NULL) &&
-           (g_bind.fx_get_name  != NULL) &&
-           (g_bind.fx_get_id    != NULL);
+    if (!g_inited) return false;
+
+    if ((g_bind.fx_get_count == NULL) ||
+        (g_bind.fx_get_name  == NULL) ||
+        (g_bind.fx_get_id    == NULL)) {
+        return false;
+    }
+
+    /* Важно: провайдер считаем готовым только если список НЕ пустой.
+     * Иначе используем fallback (локальный статический список).
+     */
+    int c = (int)g_bind.fx_get_count(g_bind.fx_arg);
+    return (c > 0);
 }
+
 
 static int fx_count(void)
 {
     if (fx_provider_ready()) {
         int c = (int)g_bind.fx_get_count(g_bind.fx_arg);
-        return (c > 0) ? c : 0;
+        if (c > 0) return c;
     }
+
     return (int)(sizeof(g_animation_list) / sizeof(g_animation_list[0]));
 }
+
 
 static const char *fx_name(uint16_t idx)
 {
@@ -597,12 +609,19 @@ static void selector_build(void)
     lv_obj_add_event_cb(s_area, selector_event_cb, LV_EVENT_PRESS_LOST, NULL);
 
     for (int i = 0; i < J_ANIM_VISIBLE_ITEMS; i++) {
-        s_labels[i] = lv_label_create(s_area);
-        lv_obj_set_style_text_align(s_labels[i], LV_TEXT_ALIGN_LEFT, 0);
-        lv_label_set_long_mode(s_labels[i], LV_LABEL_LONG_CLIP);
-        lv_obj_set_width(s_labels[i], w);
-        lv_label_set_text(s_labels[i], "...");
-    }
+    s_labels[i] = lv_label_create(s_area);
+    lv_obj_set_style_text_align(s_labels[i], LV_TEXT_ALIGN_LEFT, 0);
+    lv_label_set_long_mode(s_labels[i], LV_LABEL_LONG_CLIP);
+    lv_obj_set_width(s_labels[i], w);
+
+    /* Дефолтные стиль/цвет, чтобы не получить "чёрное на чёрном", если update не прошёл */
+    lv_obj_set_style_text_font(s_labels[i], font_for_level(2), 0);
+    lv_obj_set_style_text_color(s_labels[i], lv_color_hex(J_ANIM_CFG.color_inactive_hex), 0);
+    lv_obj_set_style_text_opa(s_labels[i], LV_OPA_COVER, 0);
+
+    lv_label_set_text(s_labels[i], "...");
+}
+
 
     if (!s_inertia_timer) {
         s_inertia_timer = lv_timer_create(inertia_timer_cb, 16, NULL);
@@ -611,9 +630,14 @@ static void selector_build(void)
         lv_timer_pause(s_inertia_timer);
     }
 
-    selector_apply(0);
-    selector_update();
+        /* ВАЖНО: вход в оверлей не должен менять режим/анимацию.
+     * Рисуем/инициализируем список, но ничего не "применяем".
+     * Первичный update сделает open() (когда оверлей уже правильно разложен).
+     */
+    s_index = 0;
+    s_pos   = 0.0f;
 }
+
 
 /* Overlay click: double tap closes */
 static void overlay_event_cb(lv_event_t *e)
