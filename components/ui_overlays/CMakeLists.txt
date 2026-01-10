@@ -1,0 +1,10 @@
+idf_component_register(
+    SRCS
+        "ui_anim_overlay.c"
+    INCLUDE_DIRS
+        "include"
+    REQUIRES
+        lvgl__lvgl
+        ui_core
+        ui_overlays
+)

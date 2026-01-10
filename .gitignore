@@ -4,7 +4,7 @@ build/
 
 # VS Code
 .vscode/
-
+remote_src.tgz
 # Python cache
 __pycache__/
 *.pyc
@@ -13,3 +13,4 @@ __pycache__/
 Thumbs.db
 .DS_Store
 "@ | Set-Content .gitignore -Encoding UTF8
+remote_src.tgz

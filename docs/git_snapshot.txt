@@ -1,0 +1,28 @@
+﻿=== git describe ===
+ESP_NOW_podnyat_remote-1-g4b0ca9e-dirty
+
+=== branch ===
+refactor/modularization-ui-esp32s3
+
+=== last 20 commits ===
+4b0ca9e wireless: bring up ESP-NOW link (peer MAC, control cmds, ack logging)
+b46dc30 wireless: bring up ESP-NOW link (peer MAC, control cmds, ack logging)
+df596c7 Make arcs and bottom window modes per-device (store in j_dev_ctx)
+4748d18 Fix device state routing: HoneyComb uses its own registry state
+470352c ui: add HoneyComb device screen via ui_dev_honeycomb; build+flash OK
+f71e7d0 ui: honeycomb becomes lamp-like without top room panel
+d483ca8 ui: extract honeycomb stub into module
+63c167a ui: remove legacy anim overlay/selector from ESP32_Remote.c (use ui_anim_overlay module)
+aaaf0e6 build: main requires ui_overlays for ui_anim_overlay.h
+32f1916 ui: add ui_overlays component skeleton
+42ec967 ui: remove duplicate j_label_cfg_t typedef (use ui_core)
+58ad168 chore: add components scaffold for modularization
+ed0280a komms translated
+c8d8abd v1.0 stable baseline: ESP32-S3 Touch LCD Remote
+
+=== key config ===
+CONFIG_J_WIFI_SSID=""
+CONFIG_J_WIFI_PASS=""
+CONFIG_J_WIFI_FALLBACK_CH=1
+CONFIG_J_NODE_ID=2
+CONFIG_J_ESPNOW_PEER_MAC="10:B4:1D:EA:DF:C8"

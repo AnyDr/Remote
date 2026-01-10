@@ -605,6 +605,16 @@ CONFIG_BT_BLE_42_FEATURES_SUPPORTED=y
 # end of Example Configuration
 
 #
+# Jinny Wireless
+#
+CONFIG_J_WIFI_SSID=""
+CONFIG_J_WIFI_PASS=""
+CONFIG_J_WIFI_FALLBACK_CH=1
+CONFIG_J_NODE_ID=2
+CONFIG_J_ESPNOW_PEER_MAC="10:B4:1D:EA:DF:C8"
+# end of Jinny Wireless
+
+#
 # ESP Speech Recognition
 #
 CONFIG_MODEL_IN_FLASH=y
