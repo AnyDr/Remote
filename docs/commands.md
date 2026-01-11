@@ -46,3 +46,4 @@ git rm --cached remote_src.tgz
 git add .gitignore
 git commit -m "git: ignore remote_src.tgz"
 git push
+ трыньк
