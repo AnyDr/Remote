@@ -104,8 +104,15 @@ static void ui_last_fx_save(uint16_t id)
 static uint16_t ui_fx_get_selected_id(void *arg)
 {
     (void)arg;
+
+    /* Prefer "current on Lamp" if we have a recent ACK snapshot */
+    uint16_t cur = j_esn_fx_last_effect_id();
+    if (cur != 0) return cur;
+
+    /* Fallback: last locally chosen (NVS) */
     return s_ui_last_fx_id;
 }
+
 
 
 static uint16_t ui_fx_get_count(void *arg)
@@ -960,7 +967,12 @@ static void center_event_cb(lv_event_t *e)
 
             g_center_last_click_ms = 0;
             LV_LOG_USER("Center double click (center-only): open animation overlay");
-            ui_anim_overlay_open();
+            if (j_esn_fx_cache_count() > 0) {
+                ui_anim_overlay_open();
+            } else {
+                LV_LOG_USER("Anim overlay: FX cache not ready (count=0), ignore open");
+            }
+
         } else {
             g_center_last_click_ms = now;
             /* одиночный короткий тап ничего не делает */
@@ -1081,7 +1093,12 @@ static void honeycomb_center_event_cb(lv_event_t *e)
 
             g_honey_center_last_click_ms = 0;
             LV_LOG_USER("HoneyComb center double click (center-only): open animation overlay");
-            ui_anim_overlay_open();
+            if (j_esn_fx_cache_count() > 0) {
+                ui_anim_overlay_open();
+            } else {
+                LV_LOG_USER("Anim overlay: FX cache not ready (count=0), ignore open");
+            }
+
         } else {
             g_honey_center_last_click_ms = now;
         }
