@@ -64,7 +64,13 @@
 ACK содержит снапшот применённого состояния:
 - `ack_seq` (u32)
 - `effect_id` (u16)
-- `brightness` (u8)
+- Использует
+
+esp_now_*, esp_wifi.h (но напрямую Wi-Fi настройки тут не меняет)
+
+NVS (nvs_open/get_blob/set_blob/commit)
+
+j_espnow_proto.h (форматы пакетов: j_esn_hdr_t, j_esn_ack_t, j_esn_ctrl_t, j_esn_fx_meta_rsp_t, j_esn_fx_chunk_rsp_t и hello_cmd’ы)brightness` (u8)
 - `paused` (u8)
 - `speed_pct` (u16)
 - `state_seq` (u32)

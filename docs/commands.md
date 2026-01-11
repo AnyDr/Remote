@@ -22,7 +22,7 @@ idf.py -p COM11 menuconfig
 
 git status
 git add -A
-git commit -m "ui: On\Off ligic fixed"
+git commit -m "ui: Current_anim_on_remote"
 git push origin stable/work
 git tag -a backup/<on\off> -m "<msg>"
 git push origin backup/<name>
