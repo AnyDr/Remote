@@ -46,6 +46,8 @@ void ui_anim_overlay_init(const ui_anim_overlay_bind_t *bind);
 void ui_anim_overlay_open(void);
 void ui_anim_overlay_close(void);
 bool ui_anim_overlay_is_open(void);
+void ui_anim_overlay_open_for(void *fx_arg);
+
 
 #ifdef __cplusplus
 }

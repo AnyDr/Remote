@@ -28,6 +28,14 @@ git tag -a backup/<on\off> -m "<msg>"
 git push origin backup/<name>
 
 
+
+git branch --show-current       покажет ветку, статус файлов и т.д.
+git status
+git log --oneline -n 1
+
+
+git switch stable/work - переключение между ветками
+
 ## 3 GitHub file size limit (remote_src.tgz)
 `remote_src.tgz` не стоит коммитить:
 - GitHub режет файлы > 100 MB

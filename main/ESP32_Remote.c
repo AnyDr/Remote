@@ -113,6 +113,12 @@ static uint16_t ui_fx_get_selected_id(void *arg)
     return s_ui_last_fx_id;
 }
 
+/* ===== BEGIN PATCH: derive device "mode" text from Lamp current effect_id ===== */
+static void ui_sync_device_modes_from_fx(void);
+static uint16_t s_ui_last_seen_ack_fx = 0;
+/* ===== END PATCH ===== */
+
+
 
 
 static uint16_t ui_fx_get_count(void *arg)
@@ -133,15 +139,17 @@ static uint16_t ui_fx_get_id(void *arg, uint16_t index)
     return j_esn_fx_cache_id_by_index(index);
 }
 
+static bool ui_dev_send_anim_id(void *dev_ctx, uint16_t effect_id);
+
+
 static void ui_fx_on_select(void *arg, uint16_t effect_id)
 {
-    (void)arg;
-    /* send to Lamp via ESPNOW */
-    j_esn_send_anim_id(effect_id);
+    (void)ui_dev_send_anim_id(arg, effect_id);
+
     s_ui_last_fx_id = effect_id;
     ui_last_fx_save(effect_id);
-
 }
+
 
 
 
@@ -278,6 +286,7 @@ static device_state_t g_current_device = {
     .energy_price_eur_per_kwh = 0.30f
 };
 
+
 // ===== BEGIN PATCH: per-device state for HoneyComb =====
 static device_state_t g_honey_device = {
     .name               = "HoneyComb",
@@ -301,9 +310,49 @@ static device_state_t g_honey_device = {
 
     .energy_price_eur_per_kwh = 0.30f
 };
+
+/* ===== BEGIN PATCH: derive device "mode" text from Lamp current effect_id ===== */
+static char s_ui_fx_name_buf[32];
+
+static const char *ui_fx_name_by_id(uint16_t effect_id)
+{
+    if (effect_id == 0) {
+        return "...";
+    }
+
+    int n = j_esn_fx_cache_count();
+    for (int i = 0; i < n; i++) {
+        if (j_esn_fx_cache_id_by_index(i) == effect_id) {
+            const char *name = j_esn_fx_cache_name_by_index(i);
+            if (!name || !name[0]) name = "UNKNOWN";
+
+            strncpy(s_ui_fx_name_buf, name, sizeof(s_ui_fx_name_buf) - 1);
+            s_ui_fx_name_buf[sizeof(s_ui_fx_name_buf) - 1] = '\0';
+            return s_ui_fx_name_buf;
+        }
+    }
+
+    lv_snprintf(s_ui_fx_name_buf, sizeof(s_ui_fx_name_buf), "FX %u", (unsigned)effect_id);
+    return s_ui_fx_name_buf;
+}
+
+static void ui_sync_device_modes_from_fx(void)
+{
+    /* While overlay is open, it previews selection via set_mode(), don't overwrite */
+    if (ui_anim_overlay_is_open()) return;
+
+    uint16_t cur = j_esn_fx_last_effect_id();
+    if (cur == 0) cur = s_ui_last_fx_id; /* fallback: local last choice */
+
+    const char *name = ui_fx_name_by_id(cur);
+
+    g_current_device.mode = name;
+    /* HoneyComb is separate physical device; do not override its mode from Lamp ACK */
+
+}
+/* ===== END PATCH ===== */
+
 // ===== END PATCH =====
-
-
 /* ============================================================
  *        ROOM VIEW MODES (TOP WINDOW)
  * ============================================================*/
@@ -478,6 +527,13 @@ typedef struct {
     void      (*on_enter)(j_dev_ctx_t *d);
     void      (*on_leave)(j_dev_ctx_t *d);
     void      (*refresh)(j_dev_ctx_t *d);
+        /* Device-scoped commands (transport hidden behind driver) */
+    bool (*send_power)(j_dev_ctx_t *d, bool on);
+    bool (*send_pause)(j_dev_ctx_t *d, bool paused);
+    bool (*send_brightness_u8)(j_dev_ctx_t *d, uint8_t b);
+    bool (*send_speed_pct)(j_dev_ctx_t *d, uint16_t sp);
+    bool (*send_anim_id)(j_dev_ctx_t *d, uint16_t effect_id);
+
 } j_dev_drv_t;
 
 // ===== BEGIN PATCH: per-device UI state in ctx =====
@@ -516,6 +572,48 @@ struct j_dev_ctx {
 static j_dev_ctx_t g_devs[J_DEV_MAX] = {0};
 static int         g_dev_count       = 0;
 static int         g_active_dev_idx  = 0;
+static bool drv_lamp_send_power(j_dev_ctx_t *d, bool on)            { (void)d; return (j_esn_send_power(on) == ESP_OK); }
+static bool drv_lamp_send_pause(j_dev_ctx_t *d, bool paused)        { (void)d; return (j_esn_send_pause(paused) == ESP_OK); }
+static bool drv_lamp_send_brightness_u8(j_dev_ctx_t *d, uint8_t b)  { (void)d; j_esn_send_brightness_u8(b); return true; }
+static bool drv_lamp_send_speed_pct(j_dev_ctx_t *d, uint16_t sp)    { (void)d; j_esn_send_speed_pct(sp); return true; }
+static bool drv_lamp_send_anim_id(j_dev_ctx_t *d, uint16_t fx)      { (void)d; j_esn_send_anim_id(fx); return true; }
+
+static const j_dev_drv_t g_drv_lamp = {
+    .id   = "lamp",
+    .name = "Jinny`s Lamp",
+    .create_root = NULL,
+    .destroy_root = NULL,
+    .on_enter = NULL,
+    .on_leave = NULL,
+    .refresh  = NULL,
+
+    .send_power = drv_lamp_send_power,
+    .send_pause = drv_lamp_send_pause,
+    .send_brightness_u8 = drv_lamp_send_brightness_u8,
+    .send_speed_pct = drv_lamp_send_speed_pct,
+    .send_anim_id = drv_lamp_send_anim_id,
+};
+
+static bool drv_honey_noop_bool(j_dev_ctx_t *d, bool v) { (void)d; (void)v; return false; }
+static bool drv_honey_noop_b(j_dev_ctx_t *d, uint8_t b) { (void)d; (void)b; return false; }
+static bool drv_honey_noop_sp(j_dev_ctx_t *d, uint16_t sp){ (void)d; (void)sp; return false; }
+static bool drv_honey_noop_fx(j_dev_ctx_t *d, uint16_t fx){ (void)d; (void)fx; return false; }
+
+static const j_dev_drv_t g_drv_honey = {
+    .id   = "honey",
+    .name = "HoneyComb",
+    .create_root = NULL,
+    .destroy_root = NULL,
+    .on_enter = NULL,
+    .on_leave = NULL,
+    .refresh  = NULL,
+
+    .send_power = drv_honey_noop_bool,
+    .send_pause = drv_honey_noop_bool,
+    .send_brightness_u8 = drv_honey_noop_b,
+    .send_speed_pct = drv_honey_noop_sp,
+    .send_anim_id = drv_honey_noop_fx,
+};
 
 /* Helpers (unused in Step 2, wired in Step 4+) */
 static inline j_dev_ctx_t *j_active_dev(void)
@@ -701,9 +799,12 @@ static void ui_anim_request_refresh(void)
 
 static void ui_refresh_all_screens(void)
 {
+    ui_sync_device_modes_from_fx();
+
     if (screen_device)    device_screen_update_from_state();
     if (screen_honeycomb) honeycomb_screen_update_from_state();
 }
+
 
 
 static bool ui_global_swipe_blocked(void)
@@ -724,6 +825,16 @@ static inline j_dev_ctx_t *ui_active_dev_ctx(void)
 {
     return j_active_dev(); /* from STEP 2 */
 }
+
+static bool ui_dev_send_anim_id(void *dev_ctx, uint16_t effect_id)
+{
+    j_dev_ctx_t *d = (j_dev_ctx_t *)dev_ctx;
+    if (d && d->drv && d->drv->send_anim_id) {
+        return d->drv->send_anim_id(d, effect_id);
+    }
+    return false;
+}
+
 
 static inline void ui_active_dev_set_overlay(bool open)
 {
@@ -900,7 +1011,9 @@ static void center_event_cb(lv_event_t *e)
 
         if (held_ms >= th_ms) {
             st->is_on = !st->is_on;
-            (void)j_esn_send_power(st->is_on);
+            j_dev_ctx_t *d = ui_active_dev_ctx();
+            if (d && d->drv && d->drv->send_power) (void)d->drv->send_power(d, st->is_on);
+
 
             LV_LOG_USER("Center hold %u ms (PRESSING): toggle power -> %d",
                         (unsigned)held_ms, st->is_on);
@@ -931,7 +1044,9 @@ static void center_event_cb(lv_event_t *e)
         /* PAUSE: остаётся “по отпусканию” */
         if (held_ms >= J_PAUSE_HOLD_MS) {
             g_ui_paused = !g_ui_paused;
-            (void)j_esn_send_pause(g_ui_paused);
+            j_dev_ctx_t *d = ui_active_dev_ctx();
+            if (d && d->drv && d->drv->send_pause) (void)d->drv->send_pause(d, g_ui_paused);
+
 
             LV_LOG_USER("Center hold %u ms (RELEASED): toggle pause -> %d",
                         (unsigned)held_ms, g_ui_paused);
@@ -968,7 +1083,8 @@ static void center_event_cb(lv_event_t *e)
             g_center_last_click_ms = 0;
             LV_LOG_USER("Center double click (center-only): open animation overlay");
             if (j_esn_fx_cache_count() > 0) {
-                ui_anim_overlay_open();
+                ui_anim_overlay_open_for(ui_active_dev_ctx());
+
             } else {
                 LV_LOG_USER("Anim overlay: FX cache not ready (count=0), ignore open");
             }
@@ -1026,7 +1142,9 @@ static void honeycomb_center_event_cb(lv_event_t *e)
 
         if (held_ms >= th_ms) {
             st->is_on = !st->is_on;
-            (void)j_esn_send_power(st->is_on);
+            j_dev_ctx_t *d = ui_active_dev_ctx();
+            if (d && d->drv && d->drv->send_power) (void)d->drv->send_power(d, st->is_on);
+
 
             LV_LOG_USER("HoneyComb center hold %u ms (PRESSING): toggle power -> %d",
                         (unsigned)held_ms, st->is_on);
@@ -1057,7 +1175,9 @@ static void honeycomb_center_event_cb(lv_event_t *e)
         /* PAUSE: остаётся “по отпусканию” */
         if (held_ms >= J_PAUSE_HOLD_MS) {
             g_ui_paused = !g_ui_paused;
-            (void)j_esn_send_pause(g_ui_paused);
+            j_dev_ctx_t *d = ui_active_dev_ctx();
+            if (d && d->drv && d->drv->send_pause) (void)d->drv->send_pause(d, g_ui_paused);
+
 
             LV_LOG_USER("HoneyComb center hold %u ms (RELEASED): toggle pause -> %d",
                         (unsigned)held_ms, g_ui_paused);
@@ -1094,7 +1214,8 @@ static void honeycomb_center_event_cb(lv_event_t *e)
             g_honey_center_last_click_ms = 0;
             LV_LOG_USER("HoneyComb center double click (center-only): open animation overlay");
             if (j_esn_fx_cache_count() > 0) {
-                ui_anim_overlay_open();
+                ui_anim_overlay_open_for(ui_active_dev_ctx());
+
             } else {
                 LV_LOG_USER("Anim overlay: FX cache not ready (count=0), ignore open");
             }
@@ -1317,7 +1438,8 @@ static void brightness_overlay_arc_event_cb(lv_event_t *e)
         // v = 0..100 (%). Переводим в 0..255 для лампы.
         uint16_t b = (uint16_t)((v * 255) / 100);
         if (b > 255) b = 255;
-        j_esn_send_brightness_u8((uint8_t)b);
+        if (d && d->drv && d->drv->send_brightness_u8) (void)d->drv->send_brightness_u8(d, (uint8_t)b);
+
     }
 }
 
@@ -1340,7 +1462,8 @@ static void speed_overlay_arc_event_cb(lv_event_t *e)
         uint16_t sp = 10 + (uint16_t)((v * (300 - 10)) / 100);
         if (sp < 10) sp = 10;
         if (sp > 300) sp = 300;
-        j_esn_send_speed_pct(sp);
+        if (d && d->drv && d->drv->send_speed_pct) (void)d->drv->send_speed_pct(d, sp);
+
     }
 }
 
@@ -2275,7 +2398,7 @@ static void ui_devices_init_registry(void)
 
 
     /* Lamp */
-    g_devs[0].drv          = NULL;
+    g_devs[0].drv  = &g_drv_lamp;
     g_devs[0].root         = screen_device;
     g_devs[0].stack_depth   = 0;
     g_devs[0].overlay_depth = 0;
@@ -2292,10 +2415,16 @@ static void ui_devices_init_registry(void)
 
     if (screen_honeycomb) {
         int idx = j_dev_insert_before_diag(screen_honeycomb, &g_honey_device);
-        ESP_LOGI("UI", "HoneyComb inserted at idx=%d (Diag stays last idx=%d)", idx, g_dev_count - 1);
+        if (idx < 0) {
+            LV_LOG_ERROR("HoneyComb insert_before_diag failed (idx=%d)", idx);
+        } else {
+            g_devs[idx].drv = &g_drv_honey;
+            ESP_LOGI("UI", "HoneyComb inserted at idx=%d (Diag stays last idx=%d)", idx, g_dev_count - 1);
+        }
     } else {
         LV_LOG_ERROR("Failed to create HoneyComb screen");
     }
+
 }
 
 
@@ -2446,8 +2575,15 @@ if (screen_honeycomb) {
     }
 
     while (1) {
-        lv_timer_handler();
-        vTaskDelay(pdMS_TO_TICKS(10));
+    uint16_t cur = j_esn_fx_last_effect_id();
+    if (cur != 0 && cur != s_ui_last_seen_ack_fx) {
+        s_ui_last_seen_ack_fx = cur;
+        ui_refresh_all_screens();
     }
+
+    lv_timer_handler();
+    vTaskDelay(pdMS_TO_TICKS(10));
+    }
+
 }
 

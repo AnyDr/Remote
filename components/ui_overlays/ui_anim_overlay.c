@@ -585,7 +585,7 @@ static void selector_event_cb(lv_event_t *e)
 
         if (is_horizontal_swipe) {
             if (abs(total_dx) >= horiz_step_px) {
-                int tgt = s_index + ((total_dx < 0) ? -1 : +1);
+                int tgt = s_index + ((total_dx < 0) ? +1 : -1);
                 tgt = J_ANIM_CFG.cyclic ? wrap_index(tgt) : clamp_index(tgt);
 
                 /* Snap will call selector_apply(tgt) once in ready_cb */
@@ -680,23 +680,15 @@ static void overlay_event_cb(lv_event_t *e)
     }
 }
 
-/* ===== Public API ===== */
-void ui_anim_overlay_init(const ui_anim_overlay_bind_t *bind)
-{
-    if (!bind) return;
-    g_bind = *bind;
-    g_inited = true;
-}
-
-bool ui_anim_overlay_is_open(void)
-{
-    return (s_overlay != NULL);
-}
-
-void ui_anim_overlay_open(void)
+static void ui_anim_overlay_open_impl(void *fx_arg)
 {
     if (!g_inited) return;
     if (s_overlay) return;
+
+    /* Override per-open context (device-scoped) */
+    if (fx_arg) {
+        g_bind.fx_arg = fx_arg;
+    }
 
     if (g_bind.set_overlay) g_bind.set_overlay(true);
 
@@ -748,7 +740,7 @@ void ui_anim_overlay_open(void)
     lv_obj_add_event_cb(s_overlay, overlay_event_cb, LV_EVENT_CLICKED, NULL);
 
     selector_build();
-    
+
     /* Предселекция: подсветить текущую/последнюю анимацию, но НЕ применять (без selector_apply). */
     if (g_bind.fx_get_selected_id) {
         uint16_t want = g_bind.fx_get_selected_id(g_bind.fx_arg);
@@ -758,7 +750,6 @@ void ui_anim_overlay_open(void)
             selector_update(); /* чтобы сразу было видно правильную подсветку */
         }
     }
-
 
     /* Keep your previous choice: scale up wheel */
     anim_wheel_set_scale(1.30f);
@@ -772,6 +763,31 @@ void ui_anim_overlay_open(void)
 
     selector_update();
 }
+
+
+/* ===== Public API ===== */
+void ui_anim_overlay_init(const ui_anim_overlay_bind_t *bind)
+{
+    if (!bind) return;
+    g_bind = *bind;
+    g_inited = true;
+}
+
+bool ui_anim_overlay_is_open(void)
+{
+    return (s_overlay != NULL);
+}
+
+void ui_anim_overlay_open(void)
+{
+    ui_anim_overlay_open_impl(NULL);
+}
+
+void ui_anim_overlay_open_for(void *fx_arg)
+{
+    ui_anim_overlay_open_impl(fx_arg);
+}
+
 
 void ui_anim_overlay_close(void)
 {
