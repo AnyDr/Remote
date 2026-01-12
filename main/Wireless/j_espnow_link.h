@@ -8,6 +8,10 @@ extern "C" {
 #endif
 
 esp_err_t j_espnow_link_start(void);
+void      j_espnow_link_stop(void);
+int j_esn_peer_register(uint16_t node_id, const uint8_t mac[6]);
+
+
 
 /* ===== Existing CTRL API ===== */
 esp_err_t j_esn_send_power(bool on);

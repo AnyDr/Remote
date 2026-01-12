@@ -20,15 +20,16 @@ idf.py -p COM11 menuconfig
 ## 2 Git checkpoint (практика сессий)
 Рекомендуемый порядок в конце сессии:
 
+cd D:\esp\ESP32-S3-Touch-LCD-Remote
 git status
 git add -A
-git commit -m "ui: Current_anim_on_remote"
-git push origin stable/work
-git tag -a backup/<on\off> -m "<msg>"
-git push origin backup/<name>
+git commit -m "вписать инфомационный тег/якорь на агл"
+
+git tag -a (backup/<on\off> -m "<msg>") - ??    
+git push origin (backup/<name>)  - ??
 
 
-
+git push origin stable/work     переключение на ветку стейбл
 git branch --show-current       покажет ветку, статус файлов и т.д.
 git status
 git log --oneline -n 1
