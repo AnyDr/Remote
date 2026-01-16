@@ -12,6 +12,7 @@ $pick = @(
   "components\ui_screens",
   "components\ui_overlays",
   "components\ui_devices",
+  "components\lvgl__lvgl",
   "components\*.c",
   "components\*.txt"
 )

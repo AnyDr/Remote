@@ -29,8 +29,10 @@
 #include "esp_log.h"
 #include "j_ui_utils.h"
 #include "ui_anim_overlay.h"
+#include "ui_ota_overlay.h"
 #include "ui_dev_honeycomb.h"
 #include "j_espnow_link.h"
+
 
 
 
@@ -235,6 +237,16 @@ static void ui_fx_on_select(void *arg, uint16_t effect_id)
 #define ARC_HIT_THICKNESS_RATIO      0.20f
 
 #define J_DEBUG_ANIM_SELECTOR  0
+
+
+/* ===== OTA secret entry (Lamp screen bottom window) ===== */
+#ifndef UI_OTA_SECRET_TAP_COUNT
+#define UI_OTA_SECRET_TAP_COUNT     10
+#endif
+
+#ifndef UI_OTA_SECRET_TAP_GAP_MS
+#define UI_OTA_SECRET_TAP_GAP_MS    350
+#endif
 
 
 /* ============================================================
@@ -1500,6 +1512,26 @@ static void bottom_dev_container_event_cb(lv_event_t *e)
     j_dev_ctx_t *d = ui_active_dev_ctx();
     if (!d) return;
 
+        /* ===== OTA secret entry: only on Lamp device, only when no overlay is open ===== */
+    if (d->drv == &g_drv_lamp && !ui_anim_overlay_is_open() && !ui_ota_overlay_is_open()) {
+        static uint32_t s_ota_last_ms = 0;
+        static uint8_t  s_ota_cnt     = 0;
+
+        uint32_t now = lv_tick_get();
+        if (now - s_ota_last_ms > UI_OTA_SECRET_TAP_GAP_MS) {
+            s_ota_cnt = 0;
+        }
+        s_ota_last_ms = now;
+        s_ota_cnt++;
+
+        if (s_ota_cnt >= UI_OTA_SECRET_TAP_COUNT) {
+            s_ota_cnt = 0;
+            ui_ota_overlay_open();
+            return; /* do NOT toggle bottom modes on the triggering tap */
+        }
+    }
+
+
     if (p.x <= mid_x) {
         d->dev_temp_view_mode =
             (dev_temp_view_mode_t)((d->dev_temp_view_mode + 1) % DEV_TEMP_VIEW_COUNT);
@@ -2470,6 +2502,32 @@ void Driver_Init(void)
         0);
 }
 
+/* ===== OTA overlay helpers (file-scope) ===== */
+
+static void ui_ota_set_overlay(bool open)
+{
+    ui_active_dev_set_overlay(open);
+}
+
+static void ui_ota_send_start(void)
+{
+    (void)j_esn_send_ota_start();
+}
+
+static void ui_ota_get_info(char *ssid, size_t ssid_sz,
+                            char *pass, size_t pass_sz,
+                            uint8_t *status, uint16_t *ttl_s)
+{
+    j_esn_ota_get_info(ssid, ssid_sz, pass, pass_sz, status, ttl_s);
+}
+
+static void ui_ota_on_info_updated(void *arg)
+{
+    (void)arg;
+    ui_ota_overlay_refresh();
+}
+
+
 /* ============================================================
  *                         app_main
  * ============================================================*/
@@ -2558,6 +2616,21 @@ if (screen_honeycomb) {
     };
 
     ui_anim_overlay_init(&anim_bind);
+
+        ui_ota_overlay_bind_t ota_bind = {
+        .p_screen_w      = &g_screen_w,
+        .p_screen_h      = &g_screen_h,
+        .p_screen_size   = &g_screen_size,
+
+        .set_overlay     = ui_ota_set_overlay,
+        .request_refresh = ui_anim_request_refresh,
+
+        .ota_send_start  = ui_ota_send_start,
+        .ota_get_info    = ui_ota_get_info,
+    };
+
+    ui_ota_overlay_init(&ota_bind);
+    j_esn_ota_set_updated_cb(ui_ota_on_info_updated, NULL);
 
 
 

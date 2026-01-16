@@ -1,6 +1,8 @@
 idf_component_register(
     SRCS
         "ui_anim_overlay.c"
+        "ui_anim_overlay.c"
+        "ui_ota_overlay.c"
     INCLUDE_DIRS
         "include"
     REQUIRES

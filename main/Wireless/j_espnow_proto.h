@@ -5,6 +5,13 @@
 #define J_ESN_VER     1
 
 /* =========================
+ *  HELLO: OTA INFO (SoftAP)
+ * ========================= */
+
+#define J_ESN_OTA_SSID_MAX   32   /* SSID max per Wi-Fi spec */
+#define J_ESN_OTA_PASS_MAX   63   /* WPA2 passphrase max */
+
+/* =========================
  *  HELLO: FX LIST SYNC
  * ========================= */
 
@@ -22,11 +29,14 @@ typedef struct __attribute__((packed)) {
 } j_esn_hdr_t;
 
 typedef enum : uint8_t {
-    J_ESN_HELLO_FX_META_REQ   = 1,
-    J_ESN_HELLO_FX_META_RSP   = 2,
-    J_ESN_HELLO_FX_CHUNK_REQ  = 3,
-    J_ESN_HELLO_FX_CHUNK_RSP  = 4,
+    J_ESN_HELLO_FX_META_REQ      = 1,
+    J_ESN_HELLO_FX_META_RSP      = 2,
+    J_ESN_HELLO_FX_CHUNK_REQ     = 3,
+    J_ESN_HELLO_FX_CHUNK_RSP     = 4,
+    /* OTA: lamp -> remote (SoftAP SSID + PASS, read-only on remote) */
+    J_ESN_HELLO_OTA_INFO_RSP     = 5,
 } j_esn_hello_cmd_t;
+
 
 /* META request: просто спросить count/crc32 */
 typedef struct __attribute__((packed)) {
@@ -73,6 +83,23 @@ typedef struct __attribute__((packed)) {
 
 
 typedef enum : uint8_t {
+    J_ESN_OTA_ST_NONE  = 0,
+    J_ESN_OTA_ST_READY = 1,  /* SSID/PASS valid */
+    J_ESN_OTA_ST_BUSY  = 2,
+    J_ESN_OTA_ST_ERROR = 3,
+} j_esn_ota_status_t;
+
+typedef struct __attribute__((packed)) {
+    j_esn_hdr_t h;          /* type = J_ESN_MSG_HELLO */
+    uint8_t     hello_cmd;  /* J_ESN_HELLO_OTA_INFO_RSP */
+    uint8_t     ota_status; /* j_esn_ota_status_t */
+    uint16_t    ttl_s;      /* optional, 0 = unknown/unused */
+    char        ssid[J_ESN_OTA_SSID_MAX + 1];
+    char        pass[J_ESN_OTA_PASS_MAX + 1];
+} j_esn_ota_info_rsp_t;
+
+
+typedef enum : uint8_t {
     J_ESN_MSG_CTRL  = 1,
     J_ESN_MSG_ACK   = 2,
     J_ESN_MSG_HELLO = 3,
@@ -84,7 +111,11 @@ typedef enum : uint8_t {
     J_ESN_CMD_SET_PAUSE,
     J_ESN_CMD_SET_BRIGHT,
     J_ESN_CMD_SET_SPEED_PCT,
+
+    /* OTA session start (lamp will switch to SoftAP and later send HELLO_OTA_INFO_RSP) */
+    J_ESN_CMD_OTA_START,
 } j_esn_cmd_t;
+
 
 typedef struct __attribute__((packed)) {
     uint16_t magic;

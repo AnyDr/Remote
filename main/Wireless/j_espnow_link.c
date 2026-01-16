@@ -48,6 +48,12 @@ typedef struct {
     /* last ACK (per device) */
     uint16_t last_effect_id;
     uint32_t last_state_seq;
+        /* OTA info (HELLO_OTA_INFO_RSP) */
+    uint8_t  ota_status;
+    uint16_t ota_ttl_s;
+    char     ota_ssid[J_ESN_OTA_SSID_MAX + 1];
+    char     ota_pass[J_ESN_OTA_PASS_MAX + 1];
+
 } j_esn_peer_t;
 
 static j_esn_peer_t s_peers[J_ESN_PEER_MAX];
@@ -68,6 +74,14 @@ static uint32_t s_fx_sync_crc32       = 0;
 /* update callback */
 static j_esn_fx_updated_cb_t s_fx_updated_cb = NULL;
 static void *s_fx_updated_arg = NULL;
+static j_esn_ota_updated_cb_t s_ota_updated_cb = NULL;
+static void *s_ota_updated_arg = NULL;
+
+static void ota_notify_updated(void)
+{
+    if (s_ota_updated_cb) s_ota_updated_cb(s_ota_updated_arg);
+}
+
 
 static void fx_notify_updated(void)
 {
@@ -273,6 +287,31 @@ static void on_recv(const esp_now_recv_info_t *info, const uint8_t *data, int le
         const uint8_t *p = (const uint8_t*)data;
         uint8_t hello_cmd = p[sizeof(j_esn_hdr_t)];
 
+        if (hello_cmd == J_ESN_HELLO_OTA_INFO_RSP) {
+            if (len < (int)sizeof(j_esn_ota_info_rsp_t)) return;
+
+            const j_esn_ota_info_rsp_t *rsp = (const j_esn_ota_info_rsp_t*)data;
+            j_esn_peer_t *pp = peer0();
+
+            pp->ota_status = rsp->ota_status;
+            pp->ota_ttl_s  = rsp->ttl_s;
+
+            memcpy(pp->ota_ssid, rsp->ssid, sizeof(pp->ota_ssid));
+            pp->ota_ssid[sizeof(pp->ota_ssid) - 1] = '\0';
+
+            memcpy(pp->ota_pass, rsp->pass, sizeof(pp->ota_pass));
+            pp->ota_pass[sizeof(pp->ota_pass) - 1] = '\0';
+
+            ESP_LOGI(TAG, "OTA INFO: status=%u ttl=%us ssid='%s'",
+                     (unsigned)pp->ota_status,
+                     (unsigned)pp->ota_ttl_s,
+                     pp->ota_ssid);
+
+            ota_notify_updated();
+            return;
+        }
+
+
         if (hello_cmd == J_ESN_HELLO_FX_META_RSP) {
             if (len < (int)sizeof(j_esn_fx_meta_rsp_t)) return;
             const j_esn_fx_meta_rsp_t *rsp = (const j_esn_fx_meta_rsp_t*)data;
@@ -469,6 +508,8 @@ esp_err_t j_esn_send_pause(bool paused)          { return send_ctrl(J_ESN_CMD_SE
 esp_err_t j_esn_send_brightness_u8(uint8_t b)    { return send_ctrl(J_ESN_CMD_SET_BRIGHT, (uint16_t)b); }
 esp_err_t j_esn_send_speed_pct(uint16_t pct)     { return send_ctrl(J_ESN_CMD_SET_SPEED_PCT, pct); }
 esp_err_t j_esn_send_anim_id(uint16_t effect_id) { return send_ctrl(J_ESN_CMD_SET_ANIM, effect_id); }
+esp_err_t j_esn_send_ota_start(void)             { return send_ctrl(J_ESN_CMD_OTA_START, 0); }
+
 
 bool j_esn_fx_cache_valid(void) { return peer0()->fx_valid; }
 
@@ -515,3 +556,37 @@ void j_esn_fx_set_updated_cb(j_esn_fx_updated_cb_t cb, void *arg)
     s_fx_updated_arg = arg;
 }
 
+void j_esn_ota_set_updated_cb(j_esn_ota_updated_cb_t cb, void *arg)
+{
+    s_ota_updated_cb = cb;
+    s_ota_updated_arg = arg;
+}
+
+bool j_esn_ota_info_valid(void)
+{
+    return (peer0()->ota_status == J_ESN_OTA_ST_READY) &&
+           (peer0()->ota_ssid[0] != '\0') &&
+           (peer0()->ota_pass[0] != '\0');
+}
+
+static void safe_copy_str(char *dst, size_t dst_sz, const char *src)
+{
+    if (!dst || dst_sz == 0) return;
+    if (!src) { dst[0] = '\0'; return; }
+    size_t n = strlen(src);
+    if (n >= dst_sz) n = dst_sz - 1;
+    memcpy(dst, src, n);
+    dst[n] = '\0';
+}
+
+void j_esn_ota_get_info(char *ssid, size_t ssid_sz,
+                        char *pass, size_t pass_sz,
+                        uint8_t *status, uint16_t *ttl_s)
+{
+    j_esn_peer_t *p = peer0();
+    if (status) *status = p->ota_status;
+    if (ttl_s)  *ttl_s  = p->ota_ttl_s;
+
+    safe_copy_str(ssid, ssid_sz, p->ota_ssid);
+    safe_copy_str(pass, pass_sz, p->ota_pass);
+}

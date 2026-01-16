@@ -23,7 +23,7 @@ idf.py -p COM11 menuconfig
 cd D:\esp\ESP32-S3-Touch-LCD-Remote
 git status
 git add -A
-git commit -m "вписать инфомационный тег/якорь на агл"
+git commit -m "Remote_OTA_Created"
 
 git tag -a (backup/<on\off> -m "<msg>") - ??    
 git push origin (backup/<name>)  - ??
